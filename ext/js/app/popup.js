@@ -662,16 +662,16 @@ export class Popup extends EventDispatcher {
 
         // NOTE: We use our own handler for passing popup position   to RN
         this._invokeSafe('displayPopupPosition', {
-          viewport,
-          popupPosition: {
-            left,
-            top,
-            width,
-            height,
-            after,
-            below,
-          },
-          sourceRects,
+            viewport,
+            popupPosition: {
+                left,
+                top,
+                width,
+                height,
+                after,
+                below,
+            },
+            sourceRects,
         });
 
         if (this._displayModeIsFullWidth) {

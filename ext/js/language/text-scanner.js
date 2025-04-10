@@ -170,6 +170,11 @@ export class TextScanner extends EventDispatcher {
         this._yomitanIsChangingTextSelectionNow = false;
         /** @type {boolean} */
         this._userHasNotSelectedAnythingManually = true;
+
+        /** @type {?import('core').Timeout} */
+        this._singleTapTimer = null;
+        /** @type {number} */
+        this._singleTapDelay = 200;
     }
 
     /** @type {boolean} */
@@ -776,8 +781,37 @@ export class TextScanner extends EventDispatcher {
         if (inputInfo === null || inputInfo.input === null) { return; }
         if (touchReleaseTime - this._touchPressTime < inputInfo.input.minimumTouchTime) { return; }
         if (inputInfo.input.scanOnTouchRelease || (inputInfo.input.scanOnTouchTap && this._touchTapValid)) {
-            void this._searchAtFromTouchEnd(x, y, inputInfo);
+            this._handlePotentialSingleTap(e, x, y, inputInfo);
         }
+    }
+
+    /**
+     * @param {TouchEvent|PointerEvent} e
+     * @param {number} x
+     * @param {number} y
+     * @param {import('text-scanner').InputInfo} inputInfo
+     */
+    _handlePotentialSingleTap(e, x, y, inputInfo) {
+        if (this._singleTapTimer) {
+            // Double tap detected! Clear the timer and do nothing.
+            clearTimeout(this._singleTapTimer);
+            this._singleTapTimer = null;
+            chrome.runtime.sendMessage({
+              action: 'ebireaderDoubleTap',
+              params: {x, y, inputInfo},
+            });
+            return;
+        }
+
+        // Start the single tap timer.
+        this._singleTapTimer = setTimeout(() => {
+            this._searchAtFromTouchEnd(x, y, inputInfo);
+            this._singleTapTimer = null;
+            chrome.runtime.sendMessage({
+              action: 'ebireaderSingleTap',
+              params: {x, y, inputInfo},
+            });
+        }, this._singleTapDelay);
     }
 
     /**
