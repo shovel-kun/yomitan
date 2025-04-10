@@ -51,6 +51,64 @@ import {SortFrequencyDictionaryController} from './sort-frequency-dictionary-con
 import {StatusFooter} from './status-footer.js';
 import {StorageController} from './storage-controller.js';
 import {TranslationTextReplacementsController} from './translation-text-replacements-controller.js';
+import {chrome} from '../../chrome-mock.js';
+import {arrayBufferToBase64} from '../../data/array-buffer-util.js';
+
+globalThis.senderContext = 4;
+
+const callbackMap = new Map();
+
+window.onNativeMessage = function(message) {
+    try {
+        // console.log('Received message from RN environment:', message);
+        message = JSON.parse(decodeURI(message));
+        console.log('Parsed message from RN environment:', message);
+    } catch (error) {
+        console.error('Error:', error);
+    }
+
+    if (
+        message.messageId !== undefined &&
+        message.messageId !== null &&
+        message.response
+    ) {
+        const callback = callbackMap.get(message.messageId);
+        if (callback) {
+            callback(message.response);
+            callbackMap.delete(message.messageId);
+        }
+    } else {
+        if (message.sender) {
+            chrome.runtime.sendMessageWithSender(message.message, message.sender.id);
+        } else {
+            chrome.runtime.sendMessage(message);
+        }
+    }
+};
+
+// Listens to all messages and decides whether to forward them to RN
+chrome.runtime.onMessage.addListener(function(message, sender, callback) {
+    if (sender.id === globalThis.senderContext) {
+        if (window.ReactNativeWebView) {
+            if (message.params && message.params.archiveContent !== undefined) {
+              message.params.archiveContent = arrayBufferToBase64(message.params.archiveContent);
+            }
+
+            const messageAndSender = {
+                message,
+                sender,
+            };
+
+            console.log('Sent message to RN environment:', JSON.stringify(messageAndSender),);
+            window.ReactNativeWebView.postMessage(JSON.stringify(messageAndSender));
+        }
+
+        if (message.params && message.params.messageId !== undefined) {
+            callbackMap.set(message.params.callbackId, callback);
+        }
+    }
+    return true;
+});
 
 /**
  * @param {GenericSettingController} genericSettingController

@@ -246,7 +246,8 @@ export class Backend {
         chrome.runtime.onMessage.addListener(onMessage);
 
         // On Chrome, this is for receiving messages sent with navigator.serviceWorker, which has the benefit of being able to transfer objects, but doesn't accept callbacks
-        (/** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (globalThis)).addEventListener('message', this._onPmMessage.bind(this));
+        // TODO: Investigate if this is important.
+        // (/** @type {ServiceWorkerGlobalScope & typeof globalThis} */ (globalThis)).addEventListener('message', this._onPmMessage.bind(this));
 
         if (this._canObservePermissionsChanges()) {
             const onPermissionsChanged = this._onWebExtensionEventWrapper(this._onPermissionsChanged.bind(this));
@@ -296,15 +297,16 @@ export class Backend {
             this._clipboardReader.browser = this._environment.getInfo().browser;
 
             // if this is Firefox and therefore not running in Service Worker, we need to use a SharedWorker to setup a MessageChannel to postMessage with the popup
-            if (self.constructor.name === 'Window') {
-                const sharedWorkerBridge = new SharedWorker(new URL('../comm/shared-worker-bridge.js', import.meta.url), {type: 'module'});
-                sharedWorkerBridge.port.postMessage({action: 'registerBackendPort'});
-                sharedWorkerBridge.port.addEventListener('message', (/** @type {MessageEvent} */ e) => {
-                    // connectToBackend2
-                    e.ports[0].onmessage = this._onPmMessage.bind(this);
-                });
-                sharedWorkerBridge.port.start();
-            }
+            // if (self.constructor.name === 'Window') {
+            //     const sharedWorkerBridge = new SharedWorker(new URL('../comm/shared-worker-bridge.js', import.meta.url), {type: 'module'});
+            //     sharedWorkerBridge.port.postMessage({action: 'registerBackendPort'});
+            //     sharedWorkerBridge.port.addEventListener('message', (/** @type {MessageEvent} */ e) => {
+            //         // connectToBackend2
+            //         e.ports[0].onmessage = this._onPmMessage.bind(this);
+            //     });
+            //     sharedWorkerBridge.port.start();
+            // }
+            // Above commented out because we will always use Chrome
             try {
                 await this._dictionaryDatabase.prepare();
             } catch (e) {
@@ -1371,9 +1373,12 @@ export class Backend {
             this._clipboardMonitor.stop();
         }
 
-        this._setupContextMenu(options);
+        // NOTE: We don't need this because we don't have a context menu.
+        // this._setupContextMenu(options);
 
-        this._attachOmniboxListener();
+        // TODO: 'The omnibox API allows you to register a keyword with Google Chrome's address bar, which is also known as the omnibox'
+        // So basically we don't need this.
+        // this._attachOmniboxListener();
 
         void this._accessibilityController.update(this._getOptionsFull(false));
 
@@ -2060,13 +2065,15 @@ export class Backend {
      */
     _sendMessageAllTabsIgnoreResponse(message) {
         const callback = () => this._checkLastError(chrome.runtime.lastError);
-        chrome.tabs.query({}, (tabs) => {
-            for (const tab of tabs) {
-                const {id} = tab;
-                if (typeof id !== 'number') { continue; }
-                chrome.tabs.sendMessage(id, message, callback);
-            }
-        });
+        // TODO: Make this work.
+        // But Yomitan seems to work fine without it.
+        // chrome.tabs.query({}, (tabs) => {
+        //     for (const tab of tabs) {
+        //         const {id} = tab;
+        //         if (typeof id !== 'number') { continue; }
+        //         chrome.tabs.sendMessage(id, message, callback);
+        //     }
+        // });
     }
 
     /**

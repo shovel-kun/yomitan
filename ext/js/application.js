@@ -24,6 +24,7 @@ import {ExtensionError} from './core/extension-error.js';
 import {log} from './core/log.js';
 import {deferPromise} from './core/utilities.js';
 import {WebExtension} from './extension/web-extension.js';
+import {chrome} from './chrome-mock.js';
 
 /**
  * @returns {boolean}
@@ -59,12 +60,25 @@ async function waitForBackendReady(webExtension) {
     /** @type {import('application').ApiMap} */
     const apiMap = createApiMap([['applicationBackendReady', () => { resolve(); }]]);
     /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
-    const onMessage = ({action, params}, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
+    // const onMessage = ({action, params}, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
+    // NOTE: We are using our own callback to send a response back to the React Native sender
+    const onMessage = ({ action, params }, _sender, callback) => {
+      const result = invokeApiMapHandler(apiMap, action, params, [], callback);
+      if (params && params.messageId !== undefined) {
+        console.log("Sending response back to the sender", { action, params });
+        callback({ messageId: params.messageId });
+      }
+      return result;
+    };
     chrome.runtime.onMessage.addListener(onMessage);
     try {
+        console.log('waitForBackendReady: sending requestBackendReadySignal');
         await webExtension.sendMessagePromise({action: 'requestBackendReadySignal'});
+        console.log('waitForBackendReady: waiting for requestBackendReadySignal');
         await promise;
+        console.log('waitForBackendReady: requestBackendReadySignal received');
     } finally {
+        console.log('waitForBackendReady: removing listener');
         chrome.runtime.onMessage.removeListener(onMessage);
     }
 }
@@ -208,6 +222,7 @@ export class Application extends EventDispatcher {
             })() :
             null;
 
+        console.log('Creating WebExtension');
         const webExtension = new WebExtension();
         log.configure(webExtension.extensionName);
 
@@ -215,23 +230,30 @@ export class Application extends EventDispatcher {
         const mediaDrawingWorker = inExtensionContext ? new Worker(new URL('display/media-drawing-worker.js', import.meta.url), {type: 'module'}) : null;
         mediaDrawingWorker?.postMessage({action: 'connectToDatabaseWorker'}, [mediaDrawingWorkerToBackendChannel.port2]);
 
+        console.log('Creating API');
         const api = new API(webExtension, mediaDrawingWorker, backendPort);
         await waitForBackendReady(webExtension);
         if (mediaDrawingWorker !== null) {
             api.connectToDatabaseWorker(mediaDrawingWorkerToBackendChannel.port1);
         }
 
-        const {tabId, frameId} = await api.frameInformationGet();
+        // NOTE: We don't have frame information
+        // const {tabId, frameId} = await api.frameInformationGet();
+        const { tabId, frameId } = { tabId: 0, frameId: 0 };
+        console.log('Creating CrossFrameAPI')
         const crossFrameApi = new CrossFrameAPI(api, tabId, frameId);
         crossFrameApi.prepare();
+        console.log('Creating Application')
         const application = new Application(api, crossFrameApi);
         application.prepare();
         if (waitForDom) { await waitForDomContentLoaded(); }
         try {
+            console.log('Calling mainFunction')
             await mainFunction(application);
         } catch (error) {
             log.error(error);
         } finally {
+            console.log('Application ready')
             application.ready();
         }
     }

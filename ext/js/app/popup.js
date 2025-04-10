@@ -27,6 +27,9 @@ import {addFullscreenChangeEventListener, computeZoomScale, convertRectZoomCoord
 import {loadStyle} from '../dom/style-util.js';
 import {checkPopupPreviewURL} from '../pages/settings/popup-preview-controller.js';
 import {ThemeController} from './theme-controller.js';
+import {deferPromise} from '../core/utilities.js';
+import {createApiMap, invokeApiMapHandler} from '../core/api-map.js';
+import {chrome} from '../chrome-mock.js';
 
 /**
  * This class is the container which hosts the display of search results.
@@ -457,34 +460,70 @@ export class Popup extends EventDispatcher {
             throw new Error('Options not initialized');
         }
 
-        const useSecurePopupFrameUrl = this._useSecureFrameUrl;
+        // NOTE: We are using our own popup frame in RN
 
-        await this._setUpContainer(this._useShadowDom);
+        // const useSecurePopupFrameUrl = this._useSecureFrameUrl;
+
+        // await this._setUpContainer(this._useShadowDom);
 
         /** @type {import('frame-client').SetupFrameFunction} */
-        const setupFrame = (frame) => {
-            frame.removeAttribute('src');
-            frame.removeAttribute('srcdoc');
-            this._observeFullscreen(true);
-            this._onFullscreenChanged();
-            const {contentDocument} = frame;
-            if (contentDocument === null) {
-                // This can occur when running inside a sandboxed frame without "allow-same-origin"
-                // Custom error is used to detect a passive error which should be ignored
-                throw new PopupError('Popup not supported in this context', this);
-            }
-            const url = chrome.runtime.getURL('/popup.html');
-            if (useSecurePopupFrameUrl) {
-                contentDocument.location.href = url;
-            } else {
-                frame.setAttribute('src', url);
-            }
-        };
+        // const setupFrame = (frame) => {
+        //     frame.removeAttribute('src');
+        //     frame.removeAttribute('srcdoc');
+        //     this._observeFullscreen(true);
+        //     this._onFullscreenChanged();
+        //     const {contentDocument} = frame;
+        //     if (contentDocument === null) {
+        //         // This can occur when running inside a sandboxed frame without "allow-same-origin"
+        //         // Custom error is used to detect a passive error which should be ignored
+        //         throw new PopupError('Popup not supported in this context', this);
+        //     }
+        //     const url = chrome.runtime.getURL('/popup.html');
+        //     if (useSecurePopupFrameUrl) {
+        //         contentDocument.location.href = url;
+        //     } else {
+        //         frame.setAttribute('src', url);
+        //     }
+        // };
 
-        const frameClient = new FrameClient();
-        this._frameClient = frameClient;
-        await frameClient.connect(this._frame, this._targetOrigin, this._frameId, setupFrame);
+        // const frameClient = new FrameClient();
+        // this._frameClient = frameClient;
+        // await frameClient.connect(this._frame, this._targetOrigin, this._frameId, setupFrame);
+        // this._frameConnected = true;
+
+
+        // NOTE: We create our custom handler for popupReady
+        async function connectPopup() {
+          const { promise, resolve } =
+            /** @type {import('core').DeferredPromiseDetails<void>} */ (
+              deferPromise()
+            );
+          /** @type {import('application').ApiMap} */
+          const apiMap = createApiMap([
+            [
+              'popupReady',
+              () => {
+                resolve();
+              },
+            ],
+          ]);
+          /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
+          const onMessage = ({ action, params }, _sender, callback) =>
+            invokeApiMapHandler(apiMap, action, params, [], callback);
+          chrome.runtime.onMessage.addListener(onMessage);
+          try {
+            console.log('popup.js: Sending message to popup');
+            chrome.runtime.sendMessage({ action: 'popupConnected' });
+            await promise;
+          } finally {
+            chrome.runtime.onMessage.removeListener(onMessage);
+          }
+        }
+
+        console.log('Connecting to popup');
+        await connectPopup();
         this._frameConnected = true;
+        console.log('Connected to popup');
 
         // Configure
         /** @type {import('display').DirectApiParams<'displayConfigure'>} */
@@ -614,11 +653,26 @@ export class Popup extends EventDispatcher {
      * @param {import('document-util').NormalizedWritingMode} writingMode
      */
     async _show(sourceRects, writingMode) {
+        console.log('Showing popup');
         const injected = await this._inject();
         if (!injected) { return; }
 
         const viewport = this._getViewport(this._scaleRelativeToVisualViewport);
         let {left, top, width, height, after, below} = this._getPosition(sourceRects, writingMode, viewport);
+
+        // NOTE: We use our own handler for passing popup position   to RN
+        this._invokeSafe('displayPopupPosition', {
+          viewport,
+          popupPosition: {
+            left,
+            top,
+            width,
+            height,
+            after,
+            below,
+          },
+          sourceRects,
+        });
 
         if (this._displayModeIsFullWidth) {
             left = viewport.left;
@@ -693,19 +747,26 @@ export class Popup extends EventDispatcher {
      * @returns {Promise<import('display').DirectApiReturn<TName>>}
      */
     async _invoke(action, params) {
-        const contentWindow = this._frame.contentWindow;
-        if (this._frameClient === null || !this._frameClient.isConnected() || contentWindow === null) {
-            throw new Error(`Failed to invoke action ${action}: frame state invalid`);
-        }
+        // NOTE: We don't have a frame client in browser, so don't chec
+        // const contentWindow = this._frame.contentWindow;
+        // if (this._frameClient === null || !this._frameClient.isConnected() || contentWindow === null) {
+        //     throw new Error(`Failed to invoke action ${action}: frame state invalid`);
+        // }
 
         /** @type {import('display').DirectApiMessage<TName>} */
         const message = {action, params};
-        const wrappedMessage = this._frameClient.createMessage(message);
-        return /** @type {import('display').DirectApiReturn<TName>} */ (await this._application.crossFrame.invoke(
-            this._frameClient.frameId,
-            'displayPopupMessage1',
-            /** @type {import('display').DirectApiFrameClientMessageAny} */ (wrappedMessage),
-        ));
+        // const wrappedMessage = this._frameClient.createMessage(message);
+        // return /** @type {import('display').DirectApiReturn<TName>} */ (await this._application.crossFrame.invoke(
+        //     this._frameClient.frameId,
+        //     'displayPopupMessage1',
+        //     /** @type {import('display').DirectApiFrameClientMessageAny} */ (wrappedMessage),
+        // ));
+        
+        // NOTE: Use our chrome mock for handling messages
+        return chrome.runtime.sendMessage({
+          action: 'displayPopupMessage1',
+          params: message,
+        });
     }
 
     /**

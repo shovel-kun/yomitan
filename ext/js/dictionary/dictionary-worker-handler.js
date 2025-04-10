@@ -29,25 +29,30 @@ export class DictionaryWorkerHandler {
 
     /** */
     prepare() {
-        self.addEventListener('message', this._onMessage.bind(this), false);
+        console.log('Preparing DictionaryWorkerHandler');
+        // self.addEventListener('message', this._onMessage.bind(this), false);
+        chrome.runtime.onMessage.addListener(this._onMessage.bind(this));
     }
 
     // Private
 
     /**
-     * @param {MessageEvent<import('dictionary-worker-handler').Message>} event
-     */
-    _onMessage(event) {
-        const {action, params} = event.data;
+    * @param {import('dictionary-worker-handler').Message} message
+    * @param {chrome.runtime.MessageSender} sender
+    * @param {(response?: any) => void} sendResponse
+    */
+    _onMessage(message, sender, sendResponse) {
+        // NOTE: Needed to modify for chrome runtime messaging
+        const { action, params } = message;
         switch (action) {
             case 'importDictionary':
-                void this._onMessageWithProgress(params, this._importDictionary.bind(this));
+                void this._onMessageWithProgress(params, this._importDictionary.bind(this), sendResponse);
                 break;
             case 'deleteDictionary':
-                void this._onMessageWithProgress(params, this._deleteDictionary.bind(this));
+                void this._onMessageWithProgress(params, this._deleteDictionary.bind(this), sendResponse);
                 break;
             case 'getDictionaryCounts':
-                void this._onMessageWithProgress(params, this._getDictionaryCounts.bind(this));
+                void this._onMessageWithProgress(params, this._getDictionaryCounts.bind(this), sendResponse);
                 break;
             case 'getImageDetails.response':
                 this._mediaLoader.handleMessage(params);
@@ -59,15 +64,18 @@ export class DictionaryWorkerHandler {
      * @template [T=unknown]
      * @param {T} params
      * @param {(details: T, onProgress: import('dictionary-worker-handler').OnProgressCallback) => Promise<unknown>} handler
+     * @param {(response?: any) => void} sendResponse
      */
-    async _onMessageWithProgress(params, handler) {
+    async _onMessageWithProgress(params, handler, sendResponse) {
         /**
          * @param {...unknown} args
          */
         const onProgress = (...args) => {
-            self.postMessage({
-                action: 'progress',
-                params: {args},
+            // NOTE: Replace all postMessage with chrome.runtime.sendMessage
+            // sendResponse({ action: 'complete', params: response });
+            chrome.runtime.sendMessage({
+              action: 'progress',
+              params: {args},
             });
         };
         let response;
@@ -77,7 +85,11 @@ export class DictionaryWorkerHandler {
         } catch (e) {
             response = {error: ExtensionError.serialize(e)};
         }
-        self.postMessage({action: 'complete', params: response});
+        // self.postMessage({action: 'complete', params: response});
+        chrome.runtime.sendMessage({
+          action: 'complete',
+          params: response,
+        });
     }
 
     /**
@@ -130,6 +142,7 @@ export class DictionaryWorkerHandler {
      * @returns {Promise<DictionaryDatabase>}
      */
     async _getPreparedDictionaryDatabase() {
+        console.log('Preparing Dictionary Database');
         const dictionaryDatabase = new DictionaryDatabase();
         await dictionaryDatabase.prepare();
         return dictionaryDatabase;

@@ -17,25 +17,33 @@
  */
 
 import * as ajvSchemas0 from '../../lib/validate-schemas.js';
-import {
-    BlobWriter as BlobWriter0,
-    TextWriter as TextWriter0,
-    Uint8ArrayReader as Uint8ArrayReader0,
-    ZipReader as ZipReader0,
-    configure,
-} from '../../lib/zip.js';
+// import {
+//     BlobWriter as BlobWriter0,
+//     TextWriter as TextWriter0,
+//     Uint8ArrayReader as Uint8ArrayReader0,
+//     ZipReader as ZipReader0,
+//     configure,
+// } from '../../lib/zip.js';
 import {compareRevisions} from './dictionary-data-util.js';
 import {ExtensionError} from '../core/extension-error.js';
 import {parseJson} from '../core/json.js';
 import {toError} from '../core/to-error.js';
 import {stringReverse} from '../core/utilities.js';
 import {getFileExtensionFromImageMediaType, getImageMediaTypeFromFileName} from '../media/media-util.js';
+import * as FileSystem from "expo-file-system";
+import * as ZipArchive from "react-native-zip-archive";
+import { Image } from "react-native";
 
 const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValidators} */ (/** @type {unknown} */ (ajvSchemas0));
-const BlobWriter = /** @type {typeof import('@zip.js/zip.js').BlobWriter} */ (/** @type {unknown} */ (BlobWriter0));
-const TextWriter = /** @type {typeof import('@zip.js/zip.js').TextWriter} */ (/** @type {unknown} */ (TextWriter0));
-const Uint8ArrayReader = /** @type {typeof import('@zip.js/zip.js').Uint8ArrayReader} */ (/** @type {unknown} */ (Uint8ArrayReader0));
-const ZipReader = /** @type {typeof import('@zip.js/zip.js').ZipReader} */ (/** @type {unknown} */ (ZipReader0));
+// TODO: Maybe use the no workers/streams version of https://gildas-lormeau.github.io/zip.js/
+//       So that we don't need to create files and read them which is slow
+// const BlobWriter = /** @type {typeof import('@zip.js/zip.js').BlobWriter} */ (/** @type {unknown} */ (BlobWriter0));
+// const TextWriter = /** @type {typeof import('@zip.js/zip.js').TextWriter} */ (/** @type {unknown} */ (TextWriter0));
+// const Uint8ArrayReader = /** @type {typeof import('@zip.js/zip.js').Uint8ArrayReader} */ (/** @type {unknown} */ (Uint8ArrayReader0));
+// const ZipReader = /** @type {typeof import('@zip.js/zip.js').ZipReader} */ (/** @type {unknown} */ (ZipReader0));
+const tempZipPath = FileSystem.cacheDirectory + "temp_archive.zip";
+const extractPath = FileSystem.cacheDirectory + "extracted_dictionary/";
+
 
 export class DictionaryImporter {
     /**
@@ -53,7 +61,7 @@ export class DictionaryImporter {
 
     /**
      * @param {import('./dictionary-database.js').DictionaryDatabase} dictionaryDatabase
-     * @param {ArrayBuffer} archiveContent
+     * @param {string} archiveContent - Base64 encoded string
      * @param {import('dictionary-importer').ImportDetails} details
      * @returns {Promise<import('dictionary-importer').ImportResult>}
      */
@@ -67,13 +75,8 @@ export class DictionaryImporter {
 
         this._progressReset();
 
-        configure({
-            workerScripts: {
-                deflate: ['../../lib/z-worker.js'],
-                inflate: ['../../lib/z-worker.js'],
-            },
-        });
 
+        try {
         // Read archive
         const fileMap = await this._getFilesFromArchive(archiveContent);
         const index = await this._readAndValidateIndex(fileMap);
@@ -82,7 +85,9 @@ export class DictionaryImporter {
         const version = /** @type {import('dictionary-data').IndexVersion} */ (index.version);
 
         // Verify database is not already imported
+        console.log("Verifying database is not already imported");
         if (await dictionaryDatabase.dictionaryExists(dictionaryTitle)) {
+            console.warn("Dictionary already exists");
             return {
                 errors: [new Error(`Dictionary ${dictionaryTitle} is already imported, skipped it.`)],
                 result: null,
@@ -90,10 +95,12 @@ export class DictionaryImporter {
         }
 
         // Load schemas
+        console.log("Loading schemas");
         this._progressNextStep(0);
         const dataBankSchemas = this._getDataBankSchemas(version);
 
         // Files
+        console.log("Getting files");
         /** @type {import('dictionary-importer').QueryDetails} */
         const queryDetails = [
             ['termFiles', /^term_bank_(\d+)\.json$/],
@@ -105,6 +112,7 @@ export class DictionaryImporter {
         const {termFiles, termMetaFiles, kanjiFiles, kanjiMetaFiles, tagFiles} = Object.fromEntries(this._getArchiveFiles(fileMap, queryDetails));
 
         // Load data
+        console.log("Loading data");
         this._progressNextStep(termFiles.length + termMetaFiles.length + kanjiFiles.length + kanjiMetaFiles.length + tagFiles.length);
         const termList = await (
             version === 1 ?
@@ -151,10 +159,12 @@ export class DictionaryImporter {
         this._progress();
 
         // Async requirements
+        console.log("Resolving async requirements");
         this._progressNextStep(requirements.length);
         const {media} = await this._resolveAsyncRequirements(requirements, fileMap);
 
         // Add dictionary descriptor
+        console.log('Adding dictionary descriptor');
         this._progressNextStep(termList.length + termMetaList.length + kanjiList.length + kanjiMetaList.length + tagList.length + media.length);
 
         /** @type {import('dictionary-importer').SummaryCounts} */
@@ -171,7 +181,7 @@ export class DictionaryImporter {
         const stylesFile = fileMap.get(stylesFileName);
         let styles = '';
         if (typeof stylesFile !== 'undefined') {
-            styles = await this._getData(stylesFile, new TextWriter());
+            styles = await FileSystem.readAsStringAsync(stylesFile.filename);
             const cssErrors = this._validateCss(styles);
             if (cssErrors.length > 0) {
                 return {
@@ -189,9 +199,11 @@ export class DictionaryImporter {
         await dictionaryDatabase.bulkAdd('dictionaries', [summary], 0, 1);
 
         // Add data
+        console.log('Adding data');
         /** @type {Error[]} */
         const errors = [];
-        const maxTransactionLength = 1000;
+        // const maxTransactionLength = 1000;
+        const maxTransactionLength = 10000;
 
         /**
          * @template {import('dictionary-database').ObjectStoreName} T
@@ -200,6 +212,7 @@ export class DictionaryImporter {
          */
         const bulkAdd = async (objectStoreName, entries) => {
             const ii = entries.length;
+            console.log('Total entries to add: ' + ii);
             for (let i = 0; i < ii; i += maxTransactionLength) {
                 const count = Math.min(maxTransactionLength, ii - i);
 
@@ -209,6 +222,7 @@ export class DictionaryImporter {
                     errors.push(toError(e));
                 }
 
+                console.log('Entries left to add: ' + (ii - i));
                 this._progressData.index += count;
                 this._progress();
             }
@@ -224,22 +238,79 @@ export class DictionaryImporter {
         this._progress();
 
         return {result: summary, errors};
-    }
+      } catch (e) {
+          console.error('Error importing dictionary:', e);
+          throw e;
+      } finally {
+          // Cleanup
+          await FileSystem.deleteAsync(extractPath, {
+              idempotent: true
+          });
+          await FileSystem.deleteAsync(tempZipPath, {
+              idempotent: true
+          });
+      }
+  }
 
     /**
-     * @param {ArrayBuffer} archiveContent
+     * @param {string} archiveContent - Base64 encoded string
      * @returns {Promise<import('dictionary-importer').ArchiveFileMap>}
      */
     async _getFilesFromArchive(archiveContent) {
-        const zipFileReader = new Uint8ArrayReader(new Uint8Array(archiveContent));
-        const zipReader = new ZipReader(zipFileReader);
-        const zipEntries = await zipReader.getEntries();
-        /** @type {import('dictionary-importer').ArchiveFileMap} */
-        const fileMap = new Map();
-        for (const entry of zipEntries) {
-            fileMap.set(entry.filename, entry);
-        }
+        // Create a temporary file from ArrayBuffer
+        // NOTE: This is inefficient since we are writing archive to disk, when we already have the archive in memory
+        await FileSystem.writeAsStringAsync(tempZipPath, archiveContent, {
+            encoding: FileSystem.EncodingType.Base64,
+        });
+
+        // Extract archive
+        console.log("Extracting archive");
+        await ZipArchive.unzip(tempZipPath, extractPath);
+
+        // Get file list
+        console.log("Getting file list");
+        /**
+         * @param {string} path
+         * @param {string} base
+         * @returns {Promise<import('dictionary-importer').ArchiveFileMap>}
+         */
+        const readDirectoryRecursive = async (path, base = "") => {
+            const fileList = await FileSystem.readDirectoryAsync(path);
+            let fileMap = new Map();
+
+            for (const filename of fileList) {
+                const fullPath = `${path}/${filename}`;
+                const relativePath = base ? `${base}/${filename}` : filename;
+                const fileInfo = await FileSystem.getInfoAsync(fullPath);
+
+                if (fileInfo.isDirectory) {
+                    const subDirMap = await readDirectoryRecursive(
+                        fullPath,
+                        relativePath,
+                    );
+                    subDirMap.forEach((value, key) => fileMap.set(key, value));
+                } else {
+                    fileMap.set(relativePath, {
+                        filename: fullPath
+                    });
+                }
+            }
+
+            return fileMap;
+        };
+
+        const fileMap = await readDirectoryRecursive(extractPath);
         return fileMap;
+
+        // const zipFileReader = new Uint8ArrayReader(new Uint8Array(archiveContent));
+        // const zipReader = new ZipReader(zipFileReader);
+        // const zipEntries = await zipReader.getEntries();
+        // /** @type {import('dictionary-importer').ArchiveFileMap} */
+        // const fileMap = new Map();
+        // for (const entry of zipEntries) {
+        //     fileMap.set(entry.filename, entry);
+        // }
+        // return fileMap;
     }
 
     /**
@@ -253,9 +324,9 @@ export class DictionaryImporter {
         if (typeof indexFile === 'undefined') {
             throw new Error('No dictionary index found in archive');
         }
-        const indexFile2 = /** @type {import('@zip.js/zip.js').Entry} */ (indexFile);
+        // const indexFile2 = /** @type {import('@zip.js/zip.js').Entry} */ (indexFile);
 
-        const indexContent = await this._getData(indexFile2, new TextWriter());
+        const indexContent = await FileSystem.readAsStringAsync(indexFile.filename);
         const index = /** @type {unknown} */ (parseJson(indexContent));
 
         if (!ajvSchemas.dictionaryIndex(index)) {
@@ -591,43 +662,65 @@ export class DictionaryImporter {
         if (typeof sizeUnits === 'string') { target.sizeUnits = sizeUnits; }
     }
 
-    /**
-     * @param {import('dictionary-importer').ImportRequirementContext} context
-     * @param {import('structured-content').ImageElementBase} target
-     * @param {import('structured-content').ImageElementBase} source
-     * @param {import('dictionary-database').DatabaseTermEntry} entry
-     */
-    async _createImageData(context, target, source, entry) {
-        const {
-            path,
-            width: preferredWidth,
-            height: preferredHeight,
-            title,
-            alt,
-            description,
-            pixelated,
-            imageRendering,
-            appearance,
-            background,
-            collapsed,
-            collapsible,
-        } = source;
-        const {width, height} = await this._getImageMedia(context, path, entry);
-        target.path = path;
-        target.width = width;
-        target.height = height;
-        if (typeof preferredWidth === 'number') { target.preferredWidth = preferredWidth; }
-        if (typeof preferredHeight === 'number') { target.preferredHeight = preferredHeight; }
-        if (typeof title === 'string') { target.title = title; }
-        if (typeof alt === 'string') { target.alt = alt; }
-        if (typeof description === 'string') { target.description = description; }
-        if (typeof pixelated === 'boolean') { target.pixelated = pixelated; }
-        if (typeof imageRendering === 'string') { target.imageRendering = imageRendering; }
-        if (typeof appearance === 'string') { target.appearance = appearance; }
-        if (typeof background === 'boolean') { target.background = background; }
-        if (typeof collapsed === 'boolean') { target.collapsed = collapsed; }
-        if (typeof collapsible === 'boolean') { target.collapsible = collapsible; }
+  /**
+   * @param {import('dictionary-importer').ImportRequirementContext} context
+   * @param {import('structured-content').ImageElementBase} target
+   * @param {import('structured-content').ImageElementBase} source
+   * @param {import('dictionary-database').DatabaseTermEntry} entry
+   */
+  async _createImageData(context, target, source, entry) {
+    const {
+      path,
+      width: preferredWidth,
+      height: preferredHeight,
+      title,
+      alt,
+      description,
+      pixelated,
+      imageRendering,
+      appearance,
+      background,
+      collapsed,
+      collapsible,
+    } = source;
+    const { width, height } = await this._getImageMedia(context, path, entry);
+    target.path = path;
+    target.width = width;
+    target.height = height;
+    if (typeof preferredWidth === "number") {
+      target.preferredWidth = preferredWidth;
     }
+    if (typeof preferredHeight === "number") {
+      target.preferredHeight = preferredHeight;
+    }
+    if (typeof title === "string") {
+      target.title = title;
+    }
+    if (typeof alt === "string") {
+      target.alt = alt;
+    }
+    if (typeof description === "string") {
+      target.description = description;
+    }
+    if (typeof pixelated === "boolean") {
+      target.pixelated = pixelated;
+    }
+    if (typeof imageRendering === "string") {
+      target.imageRendering = imageRendering;
+    }
+    if (typeof appearance === "string") {
+      target.appearance = appearance;
+    }
+    if (typeof background === "boolean") {
+      target.background = background;
+    }
+    if (typeof collapsed === "boolean") {
+      target.collapsed = collapsed;
+    }
+    if (typeof collapsible === "boolean") {
+      target.collapsible = collapsible;
+    }
+  }
 
     /**
      * @param {import('dictionary-importer').ImportRequirementContext} context
@@ -638,7 +731,7 @@ export class DictionaryImporter {
     async _getImageMedia(context, path, entry) {
         const {media} = context;
         const {dictionary} = entry;
-
+  
         /**
          * @param {string} message
          * @returns {Error}
@@ -648,7 +741,7 @@ export class DictionaryImporter {
             const readingSource = reading.length > 0 ? ` (${reading})` : '';
             return new Error(`${message} at path ${JSON.stringify(path)} for ${expression}${readingSource} in ${dictionary}`);
         };
-
+  
         // Check if already added
         let mediaData = media.get(path);
         if (typeof mediaData !== 'undefined') {
@@ -657,41 +750,87 @@ export class DictionaryImporter {
             }
             return mediaData;
         }
-
+  
         // Find file in archive
         const file = context.fileMap.get(path);
         if (typeof file === 'undefined') {
             throw createError('Could not find image');
         }
-
+  
         // Load file content
-        let content = await (await this._getData(file, new BlobWriter())).arrayBuffer();
+        let content;
+        try {
+          const base64Content = await FileSystem.readAsStringAsync(file.filename, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          content = base64Content;
+        } catch (e) {
+          throw createError('Could not read image file');
+        }
 
         const mediaType = getImageMediaTypeFromFileName(path);
         if (mediaType === null) {
-            throw createError('Could not determine media type for image');
+          throw createError('Could not determine media type for image');
         }
-
+  
         // Load image data
         let width;
         let height;
+  
         try {
-            ({content, width, height} = await this._mediaLoader.getImageDetails(content, mediaType));
-        } catch (e) {
-            throw createError('Could not load image');
+          /** @type {string} */
+          const uri = file.filename;
+          const isSVG = uri.toLowerCase().endsWith('.svg');
+    
+          if (isSVG) {
+            const svgXML = await FileSystem.readAsStringAsync(file.filename, {
+              encoding: FileSystem.EncodingType.UTF8,
+            });
+    
+            const svgMatch = svgXML.match(/<svg[^>]*>/);
+            if (svgMatch) {
+              const svgTag = svgMatch[0];
+              const viewBoxRegex = /viewBox='0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)'/;
+              // TODO: Check if below handles negative numbers and whitespace
+              // const viewBoxRegex = /viewBox='\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*'/;
+              const match = svgTag.match(viewBoxRegex);
+    
+              if (match) {
+                width = parseInt(match[1]);
+                height = parseInt(match[2]);
+              } else {
+                throw createError('Could not extract SVG dimensions');
+              }
+            } else {
+              throw createError('Invalid SVG file');
+            }
+          } else {
+            const imageSize = await new Promise((resolve, reject) => {
+              Image.getSize(
+                uri,
+                (w, h) => resolve({ width: w, height: h }),
+                reject,
+              );
+            });
+            width = imageSize.width;
+            height = imageSize.height;
+          }
+        } catch (error) {
+          console.error(error);
+          throw createError('Could not load image');
         }
-
+  
         // Create image data
         mediaData = {
-            dictionary,
-            path,
-            mediaType,
-            width,
-            height,
-            content,
+          dictionary,
+          path,
+          mediaType,
+          width,
+          height,
+          content,
         };
         media.set(path, mediaData);
-
+  
         return mediaData;
     }
 
@@ -823,7 +962,7 @@ export class DictionaryImporter {
 
         const results = [];
         for (const file of files) {
-            const content = await this._getData(file, new TextWriter());
+            const content = await FileSystem.readAsStringAsync(file.filename);
             let entries;
 
             try {

@@ -18,7 +18,7 @@
 
 import {ThemeController} from '../app/theme-controller.js';
 import {FrameEndpoint} from '../comm/frame-endpoint.js';
-import {extendApiMap, invokeApiMapHandler} from '../core/api-map.js';
+import {createApiMap, extendApiMap, invokeApiMapHandler} from '../core/api-map.js';
 import {DynamicProperty} from '../core/dynamic-property.js';
 import {EventDispatcher} from '../core/event-dispatcher.js';
 import {EventListenerCollection} from '../core/event-listener-collection.js';
@@ -226,6 +226,11 @@ export class Display extends EventDispatcher {
         this.registerWindowMessageHandlers([
             ['displayExtensionUnloaded', this._onMessageExtensionUnloaded.bind(this)],
         ]);
+        console.log('display.js: Creating apiMap to replace crossFrame,', this.apiMap);
+        this.apiMap = createApiMap([
+          ["displayPopupMessage1", this._onDisplayPopupMessage1.bind(this)],
+          ["displayPopupMessage2", this._onDisplayPopupMessage2.bind(this)],
+        ]);
         /* eslint-enable @stylistic/no-multi-spaces */
     }
 
@@ -339,10 +344,32 @@ export class Display extends EventDispatcher {
         this._queryParser.on('searched', this._onQueryParserSearch.bind(this));
         this._progressIndicatorVisible.on('change', this._onProgressIndicatorVisibleChanged.bind(this));
         this._application.on('extensionUnloaded', this._onExtensionUnloaded.bind(this));
-        this._application.crossFrame.registerHandlers([
-            ['displayPopupMessage1', this._onDisplayPopupMessage1.bind(this)],
-            ['displayPopupMessage2', this._onDisplayPopupMessage2.bind(this)],
-        ]);
+
+        // NOTE: Replace crossFrame with our own apiMap
+        // this._application.crossFrame.registerHandlers([
+        //     ['displayPopupMessage1', this._onDisplayPopupMessage1.bind(this)],
+        //     ['displayPopupMessage2', this._onDisplayPopupMessage2.bind(this)],
+        // ]);
+
+        globalThis.chrome.runtime.onMessage.addListener((message) => {
+            // console.log("Received message in display.js: ", message);
+            return invokeApiMapHandler(
+                this.apiMap,
+                message.action,
+                message.params,
+                [],
+                (result) => {
+                    const { error } = result;
+                    if (typeof error !== "undefined") {
+                      throw error;
+                    }
+                    return result.result;
+                },
+                () => {
+                    throw new Error(`Invalid action: ${message.action}`);
+                },
+            );
+        });
         window.addEventListener('message', this._onWindowMessage.bind(this), false);
 
         if (this._pageType === 'popup' && documentElement !== null) {
@@ -788,10 +815,15 @@ export class Display extends EventDispatcher {
      * @throws {Error}
      */
     _authenticateMessageData(message) {
-        if (this._frameEndpoint !== null && !this._frameEndpoint.authenticate(message)) {
-            throw new Error('Invalid authentication');
-        }
-        return /** @type {import('frame-client').Message<T>} */ (message).data;
+        // NOTE: Skipping authentication for now
+        // I don't think we need it anyways
+        // if (this._frameEndpoint !== null && !this._frameEndpoint.authenticate(message)) {
+        //     throw new Error('Invalid authentication');
+        // }
+        // return /** @type {import('frame-client').Message<T>} */ (message).data;
+
+        // NOTE: We don't have data property in custom message
+        return /** @type {import('frame-client').Message<T>} */ (message);
     }
 
     /** */
