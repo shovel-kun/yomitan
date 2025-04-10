@@ -24,7 +24,7 @@ import {ExtensionError} from './core/extension-error.js';
 import {log} from './core/log.js';
 import {deferPromise} from './core/utilities.js';
 import {WebExtension} from './extension/web-extension.js';
-import {chrome} from './chrome-mock.js';
+// import {chrome} from './chrome-mock.js';
 
 /**
  * @returns {boolean}

@@ -605,10 +605,11 @@ export class Frontend {
      * @returns {Promise<?import('popup').PopupAny>}
      */
     async _getDefaultPopup() {
-        const isXmlDocument = (typeof XMLDocument !== 'undefined' && document instanceof XMLDocument);
-        if (isXmlDocument) {
-            return null;
-        }
+        // NOTE: Comment this out because we want to use Yomitan with Epubs
+        // const isXmlDocument = (typeof XMLDocument !== 'undefined' && document instanceof XMLDocument);
+        // if (isXmlDocument) {
+        //     return null;
+        // }
 
         const {frameId} = this._application;
         if (frameId === null) {

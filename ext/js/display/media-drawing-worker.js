@@ -135,4 +135,5 @@ export class MediaDrawingWorker {
 }
 
 const mediaDrawingWorker = new MediaDrawingWorker();
-await mediaDrawingWorker.prepare();
+// await mediaDrawingWorker.prepare();
+mediaDrawingWorker.prepare();
