@@ -17,9 +17,13 @@
  */
 
 // TODO: Update for WASM svg stuff
-import {log} from "../core/log.js";
-import {stringReverse} from "../core/utilities.js";
-import {Database} from "../data/database.js";
+import {initWasm, Resvg} from '../../lib/resvg-wasm.js';
+import {createApiMap, invokeApiMapHandler} from '../core/api-map.js';
+import {ExtensionError} from '../core/extension-error.js';
+import {log} from '../core/log.js';
+import {safePerformance} from '../core/safe-performance.js';
+import {stringReverse} from '../core/utilities.js';
+import {Database} from '../data/database.js';
 
 export class DictionaryDatabase {
     constructor() {
@@ -839,8 +843,34 @@ export class DictionaryDatabase {
      * @returns {string[]}
      */
     _splitField(field) {
-        return typeof field === "string" && field.length > 0 ?
-            field.split(" ") :
-            [];
+        return typeof field === 'string' && field.length > 0 ? field.split(' ') : [];
     }
+
+    // // Parent-Worker API
+    //
+    // /**
+    //  * @param {MessagePort} port
+    //  */
+    // async connectToDatabaseWorker(port) {
+    //     if (this._worker !== null) {
+    //         // executes outside of worker
+    //         this._worker.postMessage({action: 'connectToDatabaseWorker'}, [port]);
+    //         return;
+    //     }
+    //     // executes inside worker
+    //     port.onmessage = (/** @type {MessageEvent<import('dictionary-database').ApiMessageAny>} */event) => {
+    //         const {action, params} = event.data;
+    //         return invokeApiMapHandler(this._apiMap, action, params, [port], () => {});
+    //     };
+    //     port.onmessageerror = (event) => {
+    //         const error = new ExtensionError('DictionaryDatabase: Error receiving message from main thread');
+    //         error.data = event;
+    //         log.error(error);
+    //     };
+    // }
+    //
+    // /** @type {import('dictionary-database').ApiHandler<'drawMedia'>} */
+    // _onDrawMedia(params, port) {
+    //     void this.drawMedia(params.requests, port);
+    // }
 }

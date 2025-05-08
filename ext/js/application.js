@@ -236,6 +236,9 @@ export class Application extends EventDispatcher {
         if (mediaDrawingWorker !== null) {
             api.connectToDatabaseWorker(mediaDrawingWorkerToBackendChannel.port1);
         }
+        setInterval(() => {
+            void api.heartbeat();
+        }, 20 * 1000);
 
         // NOTE: We don't have frame information
         // const {tabId, frameId} = await api.frameInformationGet();
