@@ -325,6 +325,8 @@ export class Backend {
 
             this._applyOptions('background');
 
+            this._attachOmniboxListener();
+
             const options = this._getProfileOptions({current: true}, false);
             if (options.general.showGuide) {
                 void this._openWelcomeGuidePageOnce();
@@ -1414,10 +1416,6 @@ export class Backend {
 
         // NOTE: We don't need this because we don't have a context menu.
         // this._setupContextMenu(options);
-
-        // TODO: 'The omnibox API allows you to register a keyword with Google Chrome's address bar, which is also known as the omnibox'
-        // So basically we don't need this.
-        // this._attachOmniboxListener();
 
         void this._accessibilityController.update(this._getOptionsFull(false));
 
