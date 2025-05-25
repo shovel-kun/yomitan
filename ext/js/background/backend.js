@@ -325,7 +325,9 @@ export class Backend {
 
             this._applyOptions('background');
 
-            this._attachOmniboxListener();
+            // TODO: 'The omnibox API allows you to register a keyword with Google Chrome's address bar, which is also known as the omnibox'
+            // So basically we don't need this.
+            // this._attachOmniboxListener();
 
             const options = this._getProfileOptions({current: true}, false);
             if (options.general.showGuide) {
