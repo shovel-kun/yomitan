@@ -32,6 +32,7 @@ import {stringReverse} from '../core/utilities.js';
 import {getFileExtensionFromImageMediaType, getImageMediaTypeFromFileName} from '../media/media-util.js';
 import * as FileSystem from "expo-file-system";
 import * as ZipArchive from "react-native-zip-archive";
+import { XMLParser } from 'fast-xml-parser';
 import { Image } from "react-native";
 
 const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValidators} */ (/** @type {unknown} */ (ajvSchemas0));
@@ -780,29 +781,19 @@ export class DictionaryImporter {
         try {
           /** @type {string} */
           const uri = file.filename;
-          const isSVG = uri.toLowerCase().endsWith('.svg');
+          const isSvg = uri.toLowerCase().endsWith('.svg');
     
-          if (isSVG) {
+          if (isSvg) {
             const svgXML = await FileSystem.readAsStringAsync(file.filename, {
               encoding: FileSystem.EncodingType.UTF8,
             });
-    
-            const svgMatch = svgXML.match(/<svg[^>]*>/);
-            if (svgMatch) {
-              const svgTag = svgMatch[0];
-              const viewBoxRegex = /viewBox='0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)'/;
-              // TODO: Check if below handles negative numbers and whitespace
-              // const viewBoxRegex = /viewBox='\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*'/;
-              const match = svgTag.match(viewBoxRegex);
-    
-              if (match) {
-                width = parseInt(match[1]);
-                height = parseInt(match[2]);
-              } else {
-                throw createError('Could not extract SVG dimensions');
-              }
+
+            const svgDimensions = this._getSVGDimensions(svgXML);
+            if (svgDimensions) {
+              width = svgDimensions.width;
+              height = svgDimensions.height;
             } else {
-              throw createError('Invalid SVG file');
+              throw createError('Could not extract SVG dimensions');
             }
           } else {
             const imageSize = await new Promise((resolve, reject) => {
@@ -832,6 +823,45 @@ export class DictionaryImporter {
         media.set(path, mediaData);
   
         return mediaData;
+    }
+
+
+      /**
+       * @param {string} svgString
+       * @returns {{width: number, height: number, source: "width/height" | "viewBox"} | null}
+       */
+      _getSVGDimensions(svgString) {
+        console.log(`SVG string: ${svgString}`);
+        const parser = new XMLParser({
+          ignoreAttributes: false, 
+          attributeNamePrefix: "", 
+        });
+        const parsedSVG = parser.parse(svgString);
+        console.log(`Parsed SVG: ${parsedSVG}`);
+        console.log(`Parsed SVG: ${JSON.stringify(parsedSVG)}`);
+        const svgAttributes = parsedSVG.svg;
+        console.log(`SVG attributes: ${JSON.stringify(svgAttributes)}`);
+
+        // Get width/height props
+        if (svgAttributes.width && svgAttributes.height) {
+          return {
+            width: parseFloat(svgAttributes.width),
+            height: parseFloat(svgAttributes.height),
+            source: 'width/height',
+          };
+        }
+
+        // Fall back to viewBox (format: "minX minY width height")
+        if (svgAttributes.viewBox) {
+          const [_, __, vbWidth, vbHeight] = svgAttributes.viewBox.split(/\s+/);
+          return {
+            width: parseFloat(vbWidth),
+            height: parseFloat(vbHeight),
+            source: 'viewBox',
+          };
+        }
+
+       return null;
     }
 
     /**

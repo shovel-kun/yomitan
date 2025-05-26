@@ -494,22 +494,10 @@ export class Popup extends EventDispatcher {
 
         // NOTE: We create our custom handler for popupReady
         async function connectPopup() {
-          const { promise, resolve } =
-            /** @type {import('core').DeferredPromiseDetails<void>} */ (
-              deferPromise()
-            );
+          const { promise, resolve } = /** @type {import('core').DeferredPromiseDetails<void>} */ (deferPromise());
           /** @type {import('application').ApiMap} */
-          const apiMap = createApiMap([
-            [
-              'popupReady',
-              () => {
-                resolve();
-              },
-            ],
-          ]);
-          /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
-          const onMessage = ({ action, params }, _sender, callback) =>
-            invokeApiMapHandler(apiMap, action, params, [], callback);
+          const apiMap = createApiMap([['popupReady', () => { resolve(); }]]); /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
+          const onMessage = ({ action, params }, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
           chrome.runtime.onMessage.addListener(onMessage);
           try {
             console.log('popup.js: Sending message to popup');

@@ -24,6 +24,8 @@ import {getKebabCase} from '../../data/anki-template-util.js';
 import {DictionaryWorker} from '../../dictionary/dictionary-worker.js';
 import {querySelectorNotNull} from '../../dom/query-selector.js';
 import {DictionaryController} from './dictionary-controller.js';
+import { deferPromise } from '../../core/utilities.js';
+import { createApiMap, invokeApiMapHandler } from '../../core/api-map.js';
 
 export class DictionaryImportController {
     /**
@@ -496,6 +498,35 @@ export class DictionaryImportController {
 
                 const file = await blobPromise;
                 yield file;
+
+              // NOTE: Custom handler for nativeFetch
+              // async function nativeFetch() {
+              //   const { promise, resolve } = /** @type {import('core').DeferredPromiseDetails<void>} */ (deferPromise());
+              //   /** @type {import('application').ApiMap} */
+              //   const apiMap = createApiMap([
+              //     ['nativeFetched', (params) => { resolve(params.blob); }],
+              //     ['nativeFetchFailed', () => { resolve(); }],
+              //     ['nativeFetchProgress', (params) => { onProgress({nextStep: false, index: params.index, count: params.count}); }],
+              //   ]); 
+              //   /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
+              //   const onMessage = ({ action, params }, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
+              //   chrome.runtime.onMessage.addListener(onMessage);
+              //   try {
+              //     console.log('dictionary-importer.js: Sending message to popup');
+              //     const params = { 
+              //       method: 'GET',
+              //       url: url, 
+              //       async: true,
+              //     };
+              //     chrome.runtime.sendMessage({ action: 'nativeFetch', params });
+              //     await promise;
+              //   } finally {
+              //     chrome.runtime.onMessage.removeListener(onMessage);
+              //   }
+              // }
+              //
+              // const file = await nativeFetch();
+              // yield file;
             } catch (error) {
                 log.error(error);
             }
