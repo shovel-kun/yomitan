@@ -821,7 +821,7 @@ export class DictionaryImporter {
           content,
         };
         media.set(path, mediaData);
-  
+
         return mediaData;
     }
 
@@ -831,16 +831,12 @@ export class DictionaryImporter {
        * @returns {{width: number, height: number, source: "width/height" | "viewBox"} | null}
        */
       _getSVGDimensions(svgString) {
-        console.log(`SVG string: ${svgString}`);
         const parser = new XMLParser({
           ignoreAttributes: false, 
           attributeNamePrefix: "", 
         });
         const parsedSVG = parser.parse(svgString);
-        console.log(`Parsed SVG: ${parsedSVG}`);
-        console.log(`Parsed SVG: ${JSON.stringify(parsedSVG)}`);
         const svgAttributes = parsedSVG.svg;
-        console.log(`SVG attributes: ${JSON.stringify(svgAttributes)}`);
 
         // Get width/height props
         if (svgAttributes.width && svgAttributes.height) {
