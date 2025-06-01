@@ -438,6 +438,16 @@ export class AnkiConnect {
         const body = {action, params, version: this._localVersion};
         if (this._apiKey !== null) { body.key = this._apiKey; }
         let response;
+
+        /** @returns {Promise<Response>} */
+        async function fakeFetch() {
+          const params = { body };
+          const awaitedPromise = await new Promise((resolve, reject) => {
+              chrome.runtime.sendMessage({ action: 'fakeAnkiConnect', params }, (response) => { resolve(response); })
+          });
+          return parseJson(awaitedPromise);
+        }
+
         try {
             if (this._server === null) { throw new Error('Server URL is null'); }
             response = await fetch(this._server, {
@@ -455,7 +465,11 @@ export class AnkiConnect {
         } catch (e) {
             const error = new ExtensionError('Anki connection failure');
             error.data = {action, params, originalError: e};
-            throw error;
+            /** @type Response */
+            response = await fakeFetch();
+            if (!response.ok) {
+                throw error;
+            }
         }
 
         if (!response.ok) {
@@ -468,8 +482,14 @@ export class AnkiConnect {
         /** @type {unknown} */
         let result;
         try {
-            responseText = await response.text();
-            result = parseJson(responseText);
+            // Handle fake fetch response differently
+            if (response.data) {
+                responseText = response.data;
+                result = responseText;
+            } else {
+                responseText = await response.text();
+                result = parseJson(responseText);
+            }
         } catch (e) {
             const error = new ExtensionError('Invalid Anki response');
             error.data = {action, params, status: response.status, responseText, originalError: e};

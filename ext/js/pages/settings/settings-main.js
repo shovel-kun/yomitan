@@ -62,16 +62,13 @@ window.onNativeMessage = function(message) {
     try {
         // console.log('Received message from RN environment:', message);
         message = JSON.parse(decodeURI(message));
-        console.log('Parsed message from RN environment:', message);
+        console.log('Parsed message from RN:', message);
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Failed to parse message from RN environment:', error);
+        return;
     }
 
-    if (
-        message.messageId !== undefined &&
-        message.messageId !== null &&
-        message.response
-    ) {
+    if (message.messageId !== undefined && message.messageId !== null && message.response) {
         const callback = callbackMap.get(message.messageId);
         if (callback) {
             callback(message.response);
@@ -90,16 +87,13 @@ window.onNativeMessage = function(message) {
 chrome.runtime.onMessage.addListener(function(message, sender, callback) {
     if (sender.id === globalThis.senderContext) {
         if (window.ReactNativeWebView) {
+            // TODO: Remove once we do all archive opening in RN
             if (message.params && message.params.archiveContent !== undefined) {
               message.params.archiveContent = arrayBufferToBase64(message.params.archiveContent);
             }
 
-            const messageAndSender = {
-                message,
-                sender,
-            };
-
-            console.log('Sent message to RN environment:', JSON.stringify(messageAndSender),);
+            const messageAndSender = {message, sender};
+            console.log('Sent message to RN:', JSON.stringify(messageAndSender));
             window.ReactNativeWebView.postMessage(JSON.stringify(messageAndSender));
         }
 

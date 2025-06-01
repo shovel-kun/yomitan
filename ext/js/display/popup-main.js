@@ -32,18 +32,14 @@ const callbackMap = new Map();
 
 window.onNativeMessage = function(message) {
     try {
-        // console.log("Received message from RN environment:", message);
+        // console.log('Received message from RN environment:', message);
         message = JSON.parse(decodeURI(message));
-        console.log("Parsed message from RN environment:", message);
+        console.log('Parsed message from RN environment:', message);
     } catch (error) {
-        console.log("Error:", error);
+        console.error('Failed to parse message from RN environment:', error);
     }
 
-    if (
-        message.messageId !== undefined &&
-        message.messageId !== null &&
-        message.response
-    ) {
+    if (message.messageId !== undefined && message.messageId !== null && message.response) {
         const callback = callbackMap.get(message.messageId);
         if (callback) {
             callback(message.response);
@@ -66,10 +62,7 @@ chrome.runtime.onMessage.addListener(function(message, sender, callback) {
                 message,
                 sender,
             };
-            console.log(
-                "Sent message to RN environment:",
-                JSON.stringify(messageAndSender),
-            );
+            console.log('Sent message to RN environment:', JSON.stringify(messageAndSender));
             window.ReactNativeWebView.postMessage(JSON.stringify(messageAndSender));
         }
 

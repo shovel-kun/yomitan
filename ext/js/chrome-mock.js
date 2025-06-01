@@ -120,7 +120,7 @@ const chrome = {
     },
     runtime: {
         /** @type {ChromeEvent} */
-        onMessage: new ChromeEvent(),
+        onMessage: new ChromeEvent(null),
         /**
          * @param {unknown} message
          * @param {Function} callback
@@ -133,8 +133,7 @@ const chrome = {
                 try {
                     modifiedMessage = JSON.parse(message);
                 } catch (error) {
-                    // eslint-disable-next-line no-console
-                    console.log('JSON.parse error', error);
+                    console.error('JSON.parse error', error);
                     modifiedMessage = {action: message, params: {}};
                 }
             } else if (typeof message === 'object' && message !== null) {
@@ -143,9 +142,7 @@ const chrome = {
                 modifiedMessage = {action: String(message), params: {}};
             }
 
-            if (!modifiedMessage.params) {
-                modifiedMessage.params = {};
-            }
+            modifiedMessage.params ??= {};
 
             modifiedMessage.params.callbackId =
                 'callbackId' in modifiedMessage.params ?
@@ -183,7 +180,7 @@ const chrome = {
                     modifiedMessage = JSON.parse(message);
                 } catch (error) {
                     // eslint-disable-next-line no-console
-                    console.log('JSON.parse error', error);
+                    console.error('JSON.parse error', error);
                     modifiedMessage = {action: message, params: {}};
                 }
             } else if (typeof message === 'object' && message !== null) {
@@ -192,9 +189,7 @@ const chrome = {
                 modifiedMessage = {action: String(message), params: {}};
             }
 
-            if (!modifiedMessage.params) {
-                modifiedMessage.params = {};
-            }
+            modifiedMessage.params ??= {};
 
             modifiedMessage.params.callbackId =
                 'callbackId' in modifiedMessage.params ?
