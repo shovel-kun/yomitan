@@ -77,7 +77,7 @@ export class FrameEndpoint {
 
         const {action} = /** @type {import('core').SerializableObject} */ (data);
         if (action !== 'frameEndpointConnect') {
-            log.error('Invalid action');
+            log.error(`Invalid action: ${action}`);
             return;
         }
 

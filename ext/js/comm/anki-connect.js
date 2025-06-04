@@ -465,8 +465,14 @@ export class AnkiConnect {
         } catch (e) {
             const error = new ExtensionError('Anki connection failure');
             error.data = {action, params, originalError: e};
-            /** @type Response */
-            response = await fakeFetch();
+            // If we are calling from RN, we don't need chrome webview bridge
+            if (globalThis.senderContext === 1) {
+                const { handleAnkiConnectAction } = await import('@/src/services/ankiconnect/AnkiConnectService');
+                response = JSON.parse(await handleAnkiConnectAction(body.action, body.params));
+            } else {
+                /** @type Response */
+                response = await fakeFetch();
+            }
             if (!response.ok) {
                 throw error;
             }
