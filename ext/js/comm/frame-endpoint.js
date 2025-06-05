@@ -77,6 +77,9 @@ export class FrameEndpoint {
 
         const {action} = /** @type {import('core').SerializableObject} */ (data);
         if (action !== 'frameEndpointConnect') {
+            // FIXME: actions 'response' and 'ready' keeps being picked up by code
+            // Explicitly ignore for now
+            if (action === 'response' || action === 'ready') return;
             log.error(`Invalid action: ${action}`);
             return;
         }
