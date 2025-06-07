@@ -144,8 +144,9 @@ function getIndexOfFilePath(array, item) {
  * @param {boolean} dryRun
  * @param {boolean} dryRunBuildZip
  * @param {string} yomitanVersion
+ * @param {boolean} noZip
  */
-async function build(buildDir, extDir, manifestUtil, variantNames, manifestPath, dryRun, dryRunBuildZip, yomitanVersion) {
+async function build(buildDir, extDir, manifestUtil, variantNames, manifestPath, dryRun, dryRunBuildZip, yomitanVersion, noZip) {
     const sevenZipExes = ['7za', '7z'];
 
     // Create build directory
@@ -185,13 +186,18 @@ async function build(buildDir, extDir, manifestUtil, variantNames, manifestPath,
         ensureFilesExist(extDir, excludeFiles);
 
         if (typeof fileName === 'string') {
-            const fileNameSafe = path.basename(fileName);
+            let outputFileName = fileName;
+            if (noZip && outputFileName.endsWith('.zip')) {
+                outputFileName = outputFileName.slice(0, -4); // Remove .zip extension
+            }
+            const fileNameSafe = path.basename(outputFileName);
             const fullFileName = path.join(buildDir, fileNameSafe);
+            
             if (!dryRun) {
                 fs.writeFileSync(manifestPath, ManifestUtil.createManifestString(modifiedManifest).replace('$YOMITAN_VERSION', yomitanVersion));
             }
 
-            if (fileName.endsWith('.zip')) {
+            if (fileName.endsWith('.zip') && !noZip) {
                 if (!dryRun || dryRunBuildZip) {
                     await createZip(extDir, excludeFiles, fullFileName, sevenZipExes, onUpdate, dryRun);
                 }
@@ -204,7 +210,12 @@ async function build(buildDir, extDir, manifestUtil, variantNames, manifestPath,
                 }
             } else {
                 if (!dryRun) {
-                    fs.cpSync(extDir, fullFileName, {recursive: true});
+                    // Ensure target directory exists
+                    if (!fs.existsSync(fullFileName)) {
+                        fs.mkdirSync(fullFileName, { recursive: true });
+                    }
+                    // Copy all files
+                    fs.cpSync(extDir, fullFileName, { recursive: true, force: true });
                 }
             }
         }
@@ -253,6 +264,10 @@ export async function main() {
         target: {
             type: 'string',
         },
+        noZip: {
+            type: 'boolean',
+            default: false,
+        },
     };
 
     const argv = process.argv.slice(2);
@@ -261,6 +276,7 @@ export async function main() {
     const dryRun = /** @type {boolean} */ (args.dryRun);
     const dryRunBuildZip = /** @type {boolean} */ (args.dryRunBuildZip);
     const yomitanVersion = /** @type {string} */ (args.version);
+    const noZip = /** @type {boolean} */ (args.noZip);
 
     const manifestUtil = new ManifestUtil();
 
@@ -278,7 +294,7 @@ export async function main() {
             manifestUtil.getVariants().filter(({buildable}) => buildable !== false).map(({name}) => name) :
             targets)
         ));
-        await build(buildDir, extDir, manifestUtil, variantNames, manifestPath, dryRun, dryRunBuildZip, yomitanVersion);
+        await build(buildDir, extDir, manifestUtil, variantNames, manifestPath, dryRun, dryRunBuildZip, yomitanVersion, noZip);
     } finally {
         // Restore manifest
         const manifestName = /** @type {?string} */ ((!args.default && typeof args.manifest !== 'undefined') ? args.manifest : null);
