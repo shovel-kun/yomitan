@@ -21,6 +21,8 @@ import type * as DictionaryData from './dictionary-data';
 import type * as DictionaryDatabase from './dictionary-database';
 import type * as StructuredContent from './structured-content';
 
+export type FileWithUri = {file: File, uri: string};
+
 export type OnProgressCallback = (data: ProgressData) => void;
 
 export type ImportStep = {label: string, callback?: () => void};

@@ -18,7 +18,6 @@
 
 import {ExtensionError} from '../core/extension-error.js';
 import {DictionaryImporterMediaLoader} from './dictionary-importer-media-loader.js';
-import {chrome} from '../chrome-mock.js';
 
 export class DictionaryWorker {
     constructor() {
@@ -73,30 +72,29 @@ export class DictionaryWorker {
      * @param {?(result: TResponseRaw) => TResponse} formatResult
      */
     _invoke(action, params, transfer, onProgress, formatResult) {
-        console.log('DictionaryWorker: Invoking', action);
-        return new Promise((resolve, reject) => {
-            // const worker = new Worker('/js/dictionary/dictionary-worker-main.js', {type: 'module'});
-            /** @type {import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>} */
-            const details = {
-                complete: false,
-                // worker,
-                resolve,
-                reject,
-                onMessage: null,
-                onProgress,
-                formatResult,
-            };
-            // Ugly typecast below due to not being able to explicitly state the template types
-            /** @type {(event: MessageEvent<import('dictionary-worker').MessageData<TResponseRaw>>) => void} */
-            const onMessage = /** @type {(details: import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>, event: MessageEvent<import('dictionary-worker').MessageData<TResponseRaw>>, sender: chrome.runtime.MessageSender) => void} */ (this._onMessage).bind(this, details);
-            details.onMessage = onMessage;
-            // NOTE: Replace all postMessage with chrome.runtime.sendMessage
-            // worker.addEventListener('message', onMessage);
-            // worker.postMessage({action, params}, transfer);
-            // TODO: Check if I need transfer
-            // chrome.runtime.sendMessage({ action, params }, { transfer });
-            chrome.runtime.onMessage.addListener(onMessage);
-            chrome.runtime.sendMessage({ action, params });
+        return new Promise(async (resolve, reject) => {
+            if (global.senderContext === 1) {
+                const {DictionaryWorkerHandler} = await import('./dictionary-worker-handler.js');
+                const worker = new DictionaryWorkerHandler();
+                worker.prepare();
+                /** @type {import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>} */
+                const details = {
+                    complete: false,
+                    worker,
+                    resolve,
+                    reject,
+                    onMessage: null,
+                    onProgress,
+                    formatResult,
+                };
+                // Ugly typecast below due to not being able to explicitly state the template types
+                /** @type {(event: MessageEvent<import('dictionary-worker').MessageData<TResponseRaw>>) => void} */
+                const onMessage = /** @type {(details: import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>, event: MessageEvent<import('dictionary-worker').MessageData<TResponseRaw>>) => void} */ (this._onMessage).bind(this, details);
+                details.onMessage = onMessage;
+                worker.addEventListener('message', onMessage);
+                worker.postMessage({action, params});
+                // worker.postMessage({action, params}, transfer);
+            }
         });
     }
 
@@ -104,31 +102,25 @@ export class DictionaryWorker {
      * @template [TResponseRaw=unknown]
      * @template [TResponse=unknown]
      * @param {import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>} details
-     * @param {MessageEvent<import('dictionary-worker').MessageData<TResponseRaw>>} message
-     * @param {chrome.runtime.MessageSender} sender
+     * @param {MessageEvent<import('dictionary-worker').MessageData<TResponseRaw>>} event
      */
-    _onMessage(details, message, sender) {
+    _onMessage(details, event) {
         if (details.complete) { return; }
-        const { action, params } = message;
-        // const {action, params} = event.data;
+        const {action, params} = event.data;
         switch (action) {
             case 'complete':
                 {
-                    // NOTE: Remove all references to worker
-                    // const {worker, resolve, reject, onMessage, formatResult} = details;
-                    const {resolve, reject, onMessage, formatResult} = details;
-                    // if (worker === null || onMessage === null || resolve === null || reject === null) { return; }
-                    if (onMessage === null || resolve === null || reject === null) { return; }
+                    const {worker, resolve, reject, onMessage, formatResult} = details;
+                    if (worker === null || onMessage === null || resolve === null || reject === null) { return; }
                     details.complete = true;
-                    // details.worker = null;
+                    details.worker = null;
                     details.resolve = null;
                     details.reject = null;
                     details.onMessage = null;
                     details.onProgress = null;
                     details.formatResult = null;
-                    // worker.removeEventListener('message', onMessage);
-                    // worker.terminate();
-                    chrome.runtime.onMessage.removeListener(onMessage);
+                    worker.removeEventListener('message', onMessage);
+                    worker.terminate();
                     this._onMessageComplete(params, resolve, reject, formatResult);
                 }
                 break;
@@ -137,11 +129,9 @@ export class DictionaryWorker {
                 break;
             case 'getImageDetails':
                 {
-                    // const {worker} = details;
-                    // if (worker === null) { return; }
-                    // void this._onMessageGetImageDetails(params, worker);
-                    // TODO: Idk if this is right
-                    void this._onMessageGetImageDetails(params, sender);
+                    const {worker} = details;
+                    if (worker === null) { return; }
+                    void this._onMessageGetImageDetails(params, worker);
                 }
                 break;
         }
@@ -184,16 +174,17 @@ export class DictionaryWorker {
      * @param {?(...args: unknown[]) => void} onProgress
      */
     _onMessageProgress(params, onProgress) {
-        if (typeof onProgress !== 'function') { return; }
+        // if (typeof onProgress !== 'function') { return; }
         const {args} = params;
-        onProgress(...args);
+        // onProgress(...args);
+        chrome.runtime.sendMessage({action: 'progress', params: args});
     }
 
     /**
      * @param {import('dictionary-worker').MessageGetImageDetailsParams} params
-     * @param {chrome.runtime.MessageSender} sender
+     * @param {Worker} worker
      */
-    async _onMessageGetImageDetails(params, sender) {
+    async _onMessageGetImageDetails(params, worker) {
         const {id, content, mediaType} = params;
         /** @type {Transferable[]} */
         const transfer = [];
@@ -204,19 +195,19 @@ export class DictionaryWorker {
         } catch (e) {
             response = {id, error: ExtensionError.serialize(e)};
         }
-        // worker.postMessage({action: 'getImageDetails.response', params: response}, transfer);
-        chrome.runtime.sendMessage({action: 'getImageDetails.response', params: response},  { transfer });
+        worker.postMessage({action: 'getImageDetails.response', params: response}, transfer);
     }
 
     /**
      * @param {import('dictionary-worker').MessageCompleteResultSerialized} response
-     * @returns {import('dictionary-worker').MessageCompleteResult}
+     * @returns {import('dictionary-worker').MessageCompleteResultSerialized}
      */
     _formatImportDictionaryResult(response) {
         const {result, errors} = response;
         return {
             result,
-            errors: errors.map((error) => ExtensionError.deserialize(error)),
+            // Don't deserialize errors because we have to send them over webview bridge
+            errors
         };
     }
 }

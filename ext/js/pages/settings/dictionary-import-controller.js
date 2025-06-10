@@ -21,7 +21,6 @@ import {readResponseJson} from '../../core/json.js';
 import {log} from '../../core/log.js';
 import {toError} from '../../core/to-error.js';
 import {getKebabCase} from '../../data/anki-template-util.js';
-import {DictionaryWorker} from '../../dictionary/dictionary-worker.js';
 import {querySelectorNotNull} from '../../dom/query-selector.js';
 import {DictionaryController} from './dictionary-controller.js';
 
@@ -258,9 +257,11 @@ export class DictionaryImportController {
         void this.importFilesFromURLs(url, profilesDictionarySettings, onImportDone);
     }
 
-    /** */
-    _onImportFileButtonClick() {
-        /** @type {HTMLInputElement} */ (this._importFileInput).click();
+    /**
+     * @param {MouseEvent} e
+     */
+    _onImportFileButtonClick(e) {
+        this._onImportFileChange(e);
     }
 
     /**
@@ -413,12 +414,28 @@ export class DictionaryImportController {
      * @param {Event} e
      */
     async _onImportFileChange(e) {
+        /** @returns {Promise<import('dictionary-importer').FileWithUri[]>} */
+        async function nativePickDocuments() {
+          const params = {};
+          return await new Promise((resolve, reject) => {
+              chrome.runtime.sendMessage({ action: 'nativePickDocuments', params }, (response) => { 
+                  if (response.length === 0) {
+                      reject(new Error('No documents selected'));
+                  }
+                  const files = response.map(fileAndUri => ({
+                    file: new File([], fileAndUri.name, {
+                      type: fileAndUri.type,
+                      lastModified: Date.now()
+                    }),
+                    uri: fileAndUri.uri
+                  }));
+                  resolve(files);
+              })
+          });
+        };
+
         /** @type {import('./modal.js').Modal} */ (this._importModal).setVisible(false);
-        const node = /** @type {HTMLInputElement} */ (e.currentTarget);
-        const {files} = node;
-        if (files === null) { return; }
-        const files2 = [...files];
-        node.value = '';
+        const files2 = await nativePickDocuments();
         void this._importDictionaries(
             this._arrayToAsyncGenerator(files2),
             null,
@@ -456,45 +473,43 @@ export class DictionaryImportController {
      * @param {string[]} urls
      * @param {import('dictionary-worker').ImportProgressCallback} onProgress
      * @yields {Promise<File>}
-     * @returns {AsyncGenerator<File, void, void>}
+     * @returns {AsyncGenerator<import('dictionary-importer').FileWithUri, void, void>}
      */
     async *_generateFilesFromUrls(urls, onProgress) {
         for (const url of urls) {
             onProgress({nextStep: true, index: 0, count: 0});
 
+            /** @returns {Promise<import('dictionary-importer').FileWithUri>} */
+            async function nativeDownloadRecommendedDicts() {
+              const params = {url};
+              return await new Promise((resolve, reject) => {
+                  chrome.runtime.sendMessage({ action: 'nativeDownloadRecommendedDicts', params }, (response) => { 
+                      if (!response) {
+                          reject(new Error('Failed to download recommended dictionaries'));
+                      }
+                      const fileAndUri = {
+                        file: new File([], response.name, {
+                          type: response.type,
+                        }),
+                        uri: response.uri
+                      };
+                      resolve(fileAndUri);
+                  })
+              });
+            };
+
+            function _onMessage(message) {
+                const {action, params} = message;
+                if (action === 'xhrprogress') {
+                    const {nextStep, index, count} = params;
+                    onProgress({nextStep, index, count});
+                }
+            }
+
             try {
-                const xhr = new XMLHttpRequest();
-                xhr.open('GET', url.trim(), true);
-                xhr.responseType = 'blob';
-
-                xhr.onprogress = (event) => {
-                    if (event.lengthComputable) {
-                        onProgress({nextStep: false, index: event.loaded, count: event.total});
-                    }
-                };
-
-                /** @type {Promise<File>} */
-                const blobPromise = new Promise((resolve, reject) => {
-                    xhr.onload = () => {
-                        if (xhr.status === 200) {
-                            if (xhr.response instanceof Blob) {
-                                resolve(new File([xhr.response], 'fileFromURL'));
-                            } else {
-                                reject(new Error(`Failed to fetch blob from ${url}`));
-                            }
-                        } else {
-                            reject(new Error(`Failed to fetch the URL: ${url}`));
-                        }
-                    };
-
-                    xhr.onerror = () => {
-                        reject(new Error(`Error fetching URL: ${url}`));
-                    };
-                });
-
-                xhr.send();
-
-                const file = await blobPromise;
+                chrome.runtime.onMessage.addListener(_onMessage);
+                const file = await nativeDownloadRecommendedDicts();
+                chrome.runtime.onMessage.removeListener(_onMessage);
                 yield file;
             } catch (error) {
                 log.error(error);
@@ -528,7 +543,7 @@ export class DictionaryImportController {
     }
 
     /**
-     * @param {AsyncGenerator<File, void, void>} dictionaries
+     * @param {AsyncGenerator<import('dictionary-importer').FileWithUri, void, void>} dictionaries
      * @param {import('settings-controller').ProfilesDictionarySettings} profilesDictionarySettings
      * @param {import('settings-controller').ImportDictionaryDoneCallback} onImportDone
      * @param {ImportProgressTracker} importProgressTracker
@@ -562,15 +577,15 @@ export class DictionaryImportController {
             for (let i = 0; i < importProgressTracker.dictionaryCount; ++i) {
                 importProgressTracker.onNextDictionary();
                 if (statusFooter !== null) { statusFooter.setTaskActive(progressSelector, true); }
-                const file = (await dictionaries.next()).value;
-                if (!file || !(file instanceof File)) {
+                const fileWithUri = (await dictionaries.next()).value;
+                if (!fileWithUri || !(fileWithUri.file instanceof File)) {
                     errors.push(new Error(`Failed to read file ${i + 1} of ${importProgressTracker.dictionaryCount}.`));
                     continue;
                 }
                 errors = [
                     ...errors,
                     ...(await this._importDictionaryFromZip(
-                        file,
+                        fileWithUri,
                         profilesDictionarySettings,
                         importDetails,
                         onProgress,
@@ -628,15 +643,36 @@ export class DictionaryImportController {
     }
 
     /**
-     * @param {File} file
+     * @param {import('dictionary-importer').FileWithUri} file
      * @param {import('settings-controller').ProfilesDictionarySettings} profilesDictionarySettings
      * @param {import('dictionary-importer').ImportDetails} importDetails
      * @param {import('dictionary-worker').ImportProgressCallback} onProgress
      * @returns {Promise<Error[] | undefined>}
      */
     async _importDictionaryFromZip(file, profilesDictionarySettings, importDetails, onProgress) {
-        const archiveContent = await this._readFile(file);
-        const {result, errors} = await new DictionaryWorker().importDictionary(archiveContent, importDetails, onProgress);
+        /** @returns {Promise<import('dictionary-worker').MessageCompleteResultSerialized>} */
+        async function nativeImportDictionary() {
+            const params = {uri: file.uri, importDetails, onProgress};
+            return await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage({ action: 'nativeImportDictionary', params }, (response) => { 
+                    resolve(response);
+                })
+            });
+        }
+
+        function _onMessage(details) {
+            if (details.complete) { return; }
+            const {action, params} = details;
+            if (action === 'progress') {
+                onProgress(...params);
+            }
+        }
+
+        chrome.runtime.onMessage.addListener(_onMessage);
+        const {result, errors: serializedErrors} = await nativeImportDictionary();
+        const errors = serializedErrors.map((error) => ExtensionError.deserialize(error));
+        chrome.runtime.onMessage.removeListener(_onMessage);
+
         if (!result) {
             return errors;
         }

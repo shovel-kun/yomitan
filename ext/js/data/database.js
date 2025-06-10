@@ -236,13 +236,9 @@ export class Database {
         const indexName = indexNames[j];
         const data = { item, itemIndex: i, indexIndex: j };
 
-        const sql = `
-        SELECT 
-          id, 
-          json_extract(data, '$') as value 
-        FROM ${objectStoreName} 
-        WHERE json_extract(data, '$.${indexName}') = ?
-      `;
+        const sql = `SELECT id, json_extract(data, '$') as value
+                     FROM ${objectStoreName}
+                     WHERE json_extract(data, '$.${indexName}') = ?`;
         const params = [query];
 
         try {
@@ -290,14 +286,12 @@ export class Database {
     }
 
     const placeholders = items.map(() => "?").join(",");
-    const sql = `
-    SELECT 
-      json_extract(data, '$.${indexColumn}') as ${indexColumn}, 
-      json_extract(data, '$') as data,
-      id
-    FROM ${tableName} 
-    WHERE json_extract(data, '$.${indexColumn}') IN (${placeholders})
-  `;
+    const sql = `SELECT
+                   json_extract(data, '$.${indexColumn}') as ${indexColumn},
+                   json_extract(data, '$') as data,
+                   id
+                 FROM ${tableName}
+                 WHERE json_extract(data, '$.${indexColumn}') IN (${placeholders})`;
     const queries = items.map(createQuery);
 
     // TODO: Batch this
@@ -457,20 +451,20 @@ export class Database {
     }
 
     // TODO: Do I need id from here? Might as well remove
-    const sqlQuery = `SELECT id, json_extract(data, '$') as data 
-                    FROM ${objectStoreName} 
-                    WHERE json_extract(data, '$.${indexName}') = ?
-                    LIMIT 1`;
+    const sql = `SELECT id, json_extract(data, '$') as data
+                 FROM ${objectStoreName}
+                 WHERE json_extract(data, '$.${indexName}') = ?
+                 LIMIT 1`;
 
     try {
-      const { rows } = await this._db.execute(sqlQuery, [query]);
+      const { rows } = await this._db.execute(sql, [query]);
       const result = rows;
 
       if (!result || result.length === 0) {
         return defaultValue;
       }
 
-      const parsedData = JSON.parse(result);
+      const parsedData = JSON.parse(result[0].data);
 
       if (predicate && typeof predicate === "function") {
         return predicate(parsedData, predicateArg) ? parsedData : defaultValue;
@@ -478,7 +472,7 @@ export class Database {
 
       return parsedData;
     } catch (error) {
-      console.error(`Error in find method: ${error.message}`);
+      console.error(`Error finding in ${objectStoreName}: ${error}`);
       return defaultValue;
     }
   }

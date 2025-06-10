@@ -30,10 +30,11 @@ import {parseJson} from '../core/json.js';
 import {toError} from '../core/to-error.js';
 import {stringReverse} from '../core/utilities.js';
 import {getFileExtensionFromImageMediaType, getImageMediaTypeFromFileName} from '../media/media-util.js';
-import * as FileSystem from "expo-file-system";
-import * as ZipArchive from "react-native-zip-archive";
+import * as FileSystem from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system/next';
+import * as ZipArchive from 'react-native-zip-archive';
 import { XMLParser } from 'fast-xml-parser';
-import { Image } from "react-native";
+import { Image } from 'react-native';
 
 const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValidators} */ (/** @type {unknown} */ (ajvSchemas0));
 // TODO: Maybe use the no workers/streams version of https://gildas-lormeau.github.io/zip.js/
@@ -42,9 +43,7 @@ const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValida
 // const TextWriter = /** @type {typeof import('@zip.js/zip.js').TextWriter} */ (/** @type {unknown} */ (TextWriter0));
 // const Uint8ArrayReader = /** @type {typeof import('@zip.js/zip.js').Uint8ArrayReader} */ (/** @type {unknown} */ (Uint8ArrayReader0));
 // const ZipReader = /** @type {typeof import('@zip.js/zip.js').ZipReader} */ (/** @type {unknown} */ (ZipReader0));
-const tempZipPath = FileSystem.cacheDirectory + "temp_archive.zip";
-const extractPath = FileSystem.cacheDirectory + "extracted_dictionary/";
-
+const extractDir = new Directory(Paths.cache, 'extracted_dictionary');
 
 export class DictionaryImporter {
     /**
@@ -86,9 +85,8 @@ export class DictionaryImporter {
         const version = /** @type {import('dictionary-data').IndexVersion} */ (index.version);
 
         // Verify database is not already imported
-        console.log("Verifying database is not already imported");
+        console.log('Verifying database is not already imported');
         if (await dictionaryDatabase.dictionaryExists(dictionaryTitle)) {
-            console.warn("Dictionary already exists");
             return {
                 errors: [new Error(`Dictionary ${dictionaryTitle} is already imported, skipped it.`)],
                 result: null,
@@ -96,12 +94,12 @@ export class DictionaryImporter {
         }
 
         // Load schemas
-        console.log("Loading schemas");
+        console.log('Loading schemas');
         this._progressNextStep(0);
         const dataBankSchemas = this._getDataBankSchemas(version);
 
         // Files
-        console.log("Getting files");
+        console.log('Getting files');
         /** @type {import('dictionary-importer').QueryDetails} */
         const queryDetails = [
             ['termFiles', /^term_bank_(\d+)\.json$/],
@@ -113,7 +111,8 @@ export class DictionaryImporter {
         const {termFiles, termMetaFiles, kanjiFiles, kanjiMetaFiles, tagFiles} = Object.fromEntries(this._getArchiveFiles(fileMap, queryDetails));
 
         // Load data
-        console.log("Loading data");
+        console.log('Loading data');
+        const totalStart = performance.now();
         this._progressNextStep(termFiles.length + termMetaFiles.length + kanjiFiles.length + kanjiMetaFiles.length + tagFiles.length);
         const termList = await (
             version === 1 ?
@@ -129,6 +128,7 @@ export class DictionaryImporter {
         const kanjiMetaList = await this._readFileSequence(kanjiMetaFiles, this._convertKanjiMetaBankEntry.bind(this), dataBankSchemas[3], dictionaryTitle);
         const tagList = await this._readFileSequence(tagFiles, this._convertTagBankEntry.bind(this), dataBankSchemas[4], dictionaryTitle);
         this._addOldIndexTags(index, tagList, dictionaryTitle);
+        console.log(`Loaded data in ${(performance.now() - totalStart).toFixed(2)}ms`);
 
         // Prefix wildcard support
         const prefixWildcardsSupported = !!details.prefixWildcardsSupported;
@@ -160,7 +160,7 @@ export class DictionaryImporter {
         this._progress();
 
         // Async requirements
-        console.log("Resolving async requirements");
+        console.log('Resolving async requirements');
         this._progressNextStep(requirements.length);
         const {media} = await this._resolveAsyncRequirements(requirements, fileMap);
 
@@ -182,7 +182,7 @@ export class DictionaryImporter {
         const stylesFile = fileMap.get(stylesFileName);
         let styles = '';
         if (typeof stylesFile !== 'undefined') {
-            styles = await FileSystem.readAsStringAsync(stylesFile.filename);
+            styles = new File(stylesFile.filename).text();
             const cssErrors = this._validateCss(styles);
             if (cssErrors.length > 0) {
                 return {
@@ -244,12 +244,7 @@ export class DictionaryImporter {
           throw e;
       } finally {
           // Cleanup
-          await FileSystem.deleteAsync(extractPath, {
-              idempotent: true
-          });
-          await FileSystem.deleteAsync(tempZipPath, {
-              idempotent: true
-          });
+          extractDir.delete()
       }
   }
 
@@ -258,34 +253,27 @@ export class DictionaryImporter {
      * @returns {Promise<import('dictionary-importer').ArchiveFileMap>}
      */
     async _getFilesFromArchive(archiveContent) {
-        // Create a temporary file from ArrayBuffer
-        // NOTE: This is inefficient since we are writing archive to disk, when we already have the archive in memory
-        await FileSystem.writeAsStringAsync(tempZipPath, archiveContent, {
-            encoding: FileSystem.EncodingType.Base64,
-        });
-
         // Extract archive
-        console.log("Extracting archive");
-        await ZipArchive.unzip(tempZipPath, extractPath);
+        console.log('Extracting archive');
+        await ZipArchive.unzip(archiveContent, extractDir.uri);
 
         // Get file list
-        console.log("Getting file list");
+        console.log('Getting file list');
         /**
          * @param {string} path
          * @param {string} base
-         * @returns {Promise<import('dictionary-importer').ArchiveFileMap>}
+         * @returns {import('dictionary-importer').ArchiveFileMap}
          */
-        const readDirectoryRecursive = async (path, base = "") => {
-            const fileList = await FileSystem.readDirectoryAsync(path);
+        const readDirectoryRecursive = (path, base = '') => {
+            const fileList = new Directory(path).list();
             let fileMap = new Map();
 
-            for (const filename of fileList) {
-                const fullPath = `${path}/${filename}`;
-                const relativePath = base ? `${base}/${filename}` : filename;
-                const fileInfo = await FileSystem.getInfoAsync(fullPath);
+            for (const file of fileList) {
+                const fullPath = `${path}/${file.name}`;
+                const relativePath = base ? `${base}/${file.name}` : file.name;
 
-                if (fileInfo.isDirectory) {
-                    const subDirMap = await readDirectoryRecursive(
+                if (file instanceof Directory) {
+                    const subDirMap = readDirectoryRecursive(
                         fullPath,
                         relativePath,
                     );
@@ -300,7 +288,7 @@ export class DictionaryImporter {
             return fileMap;
         };
 
-        const fileMap = await readDirectoryRecursive(extractPath);
+        const fileMap = readDirectoryRecursive(extractDir.uri);
         return fileMap;
 
         // const zipFileReader = new Uint8ArrayReader(new Uint8Array(archiveContent));
@@ -327,7 +315,7 @@ export class DictionaryImporter {
         }
         // const indexFile2 = /** @type {import('@zip.js/zip.js').Entry} */ (indexFile);
 
-        const indexContent = await FileSystem.readAsStringAsync(indexFile.filename);
+        const indexContent = new File(indexFile.filename).text();
         const index = /** @type {unknown} */ (parseJson(indexContent));
 
         if (!ajvSchemas.dictionaryIndex(index)) {
@@ -688,37 +676,37 @@ export class DictionaryImporter {
     target.path = path;
     target.width = width;
     target.height = height;
-    if (typeof preferredWidth === "number") {
+    if (typeof preferredWidth === 'number') {
       target.preferredWidth = preferredWidth;
     }
-    if (typeof preferredHeight === "number") {
+    if (typeof preferredHeight === 'number') {
       target.preferredHeight = preferredHeight;
     }
-    if (typeof title === "string") {
+    if (typeof title === 'string') {
       target.title = title;
     }
-    if (typeof alt === "string") {
+    if (typeof alt === 'string') {
       target.alt = alt;
     }
-    if (typeof description === "string") {
+    if (typeof description === 'string') {
       target.description = description;
     }
-    if (typeof pixelated === "boolean") {
+    if (typeof pixelated === 'boolean') {
       target.pixelated = pixelated;
     }
-    if (typeof imageRendering === "string") {
+    if (typeof imageRendering === 'string') {
       target.imageRendering = imageRendering;
     }
-    if (typeof appearance === "string") {
+    if (typeof appearance === 'string') {
       target.appearance = appearance;
     }
-    if (typeof background === "boolean") {
+    if (typeof background === 'boolean') {
       target.background = background;
     }
-    if (typeof collapsed === "boolean") {
+    if (typeof collapsed === 'boolean') {
       target.collapsed = collapsed;
     }
-    if (typeof collapsible === "boolean") {
+    if (typeof collapsible === 'boolean') {
       target.collapsible = collapsible;
     }
   }
@@ -761,9 +749,7 @@ export class DictionaryImporter {
         // Load file content
         let content;
         try {
-          const base64Content = await FileSystem.readAsStringAsync(file.filename, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
+          const base64Content = new File(file.filename).base64();
           content = base64Content;
         } catch (e) {
           throw createError('Could not read image file');
@@ -784,9 +770,7 @@ export class DictionaryImporter {
           const isSvg = uri.toLowerCase().endsWith('.svg');
     
           if (isSvg) {
-            const svgXML = await FileSystem.readAsStringAsync(file.filename, {
-              encoding: FileSystem.EncodingType.UTF8,
-            });
+            const svgXML = new File(file.filename).text()
 
             const svgDimensions = this._getSVGDimensions(svgXML);
             if (svgDimensions) {
@@ -828,13 +812,10 @@ export class DictionaryImporter {
 
       /**
        * @param {string} svgString
-       * @returns {{width: number, height: number, source: "width/height" | "viewBox"} | null}
+       * @returns {{width: number, height: number, source: 'width/height' | 'viewBox'} | null}
        */
       _getSVGDimensions(svgString) {
-        const parser = new XMLParser({
-          ignoreAttributes: false, 
-          attributeNamePrefix: "", 
-        });
+        const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: ''});
         const parsedSVG = parser.parse(svgString);
         const svgAttributes = parsedSVG.svg;
 
@@ -847,7 +828,7 @@ export class DictionaryImporter {
           };
         }
 
-        // Fall back to viewBox (format: "minX minY width height")
+        // Fall back to viewBox (format: 'minX minY width height')
         if (svgAttributes.viewBox) {
           const [_, __, vbWidth, vbHeight] = svgAttributes.viewBox.split(/\s+/);
           return {

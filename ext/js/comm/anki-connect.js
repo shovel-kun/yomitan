@@ -440,10 +440,10 @@ export class AnkiConnect {
         let response;
 
         /** @returns {Promise<Response>} */
-        async function fakeFetch() {
+        async function nativeFetch() {
           const params = { body };
           const awaitedPromise = await new Promise((resolve, reject) => {
-              chrome.runtime.sendMessage({ action: 'fakeAnkiConnect', params }, (response) => { resolve(response); })
+              chrome.runtime.sendMessage({ action: 'nativeAnkiConnect', params }, (response) => { resolve(response); })
           });
           return parseJson(awaitedPromise);
         }
@@ -471,7 +471,7 @@ export class AnkiConnect {
                 response = parseJson(await handleAnkiConnectAction(body.action, body.params));
             } else {
                 /** @type Response */
-                response = await fakeFetch();
+                response = await nativeFetch();
             }
             if (!response.ok) {
                 throw error;
