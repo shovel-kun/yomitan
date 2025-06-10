@@ -17,11 +17,11 @@
  */
 
 // TODO: Update for WASM svg stuff
-import {initWasm, Resvg} from '../../lib/resvg-wasm.js';
-import {createApiMap, invokeApiMapHandler} from '../core/api-map.js';
-import {ExtensionError} from '../core/extension-error.js';
+// import {initWasm, Resvg} from '../../lib/resvg-wasm.js';
+// import {createApiMap, invokeApiMapHandler} from '../core/api-map.js';
+// import {ExtensionError} from '../core/extension-error.js';
 import {log} from '../core/log.js';
-import {safePerformance} from '../core/safe-performance.js';
+// import {safePerformance} from '../core/safe-performance.js';
 import {stringReverse} from '../core/utilities.js';
 import {Database} from '../data/database.js';
 
@@ -31,38 +31,17 @@ export class DictionaryDatabase {
         this._db = new Database();
         globalThis._db = this._db;
         /** @type {string} */
-        this._dbName = "dict";
-        /** @type {import('dictionary-database').CreateQuery<string>} */
-        // this._createOnlyQuery1 = (item) => IDBKeyRange.only(item);
-        // /** @type {import('dictionary-database').CreateQuery<import('dictionary-database').DictionaryAndQueryRequest>} */
-        // this._createOnlyQuery2 = (item) => IDBKeyRange.only(item.query);
-        // /** @type {import('dictionary-database').CreateQuery<import('dictionary-database').TermExactRequest>} */
-        // this._createOnlyQuery3 = (item) => IDBKeyRange.only(item.term);
-        // /** @type {import('dictionary-database').CreateQuery<import('dictionary-database').MediaRequest>} */
-        // this._createOnlyQuery4 = (item) => IDBKeyRange.only(item.path);
-        // /** @type {import('dictionary-database').CreateQuery<string>} */
-        // this._createBoundQuery1 = (item) =>
-        //   IDBKeyRange.bound(item, `${item}\uffff`, false, false);
-        // /** @type {import('dictionary-database').CreateQuery<string>} */
-        // this._createBoundQuery2 = (item) => {
-        //   item = stringReverse(item);
-        //   return IDBKeyRange.bound(item, `${item}\uffff`, false, false);
-        // };
+        this._dbName = 'dict';
         /** @type {(item: string) => string} */
         this._createOnlyQuery1 = (item) => item;
-
         /** @type {(item: import('dictionary-database').DictionaryAndQueryRequest) => string} */
         this._createOnlyQuery2 = (item) => item.query;
-
         /** @type {(item: import('dictionary-database').TermExactRequest) => string} */
         this._createOnlyQuery3 = (item) => item.term;
-
         /** @type {(item: import('dictionary-database').MediaRequest) => string} */
         this._createOnlyQuery4 = (item) => item.path;
-
         /** @type {(item: string) => string} */
         this._createBoundQuery1 = (item) => `${item}%`;
-
         /** @type {(item: string) => string} */
         this._createBoundQuery2 = (item) => {
             const reversedItem = stringReverse(item);
@@ -80,49 +59,55 @@ export class DictionaryDatabase {
         this._createKanjiMetaBind = this._createKanjiMeta.bind(this);
         /** @type {import('dictionary-database').CreateResult<import('dictionary-database').MediaRequest, import('dictionary-database').MediaDataArrayBufferContent, import('dictionary-database').Media>} */
         this._createMediaBind = this._createMedia.bind(this);
+        /** @type {import('dictionary-database').CreateResult<import('dictionary-database').DrawMediaGroupedRequest, import('dictionary-database').MediaDataArrayBufferContent, import('dictionary-database').DrawMedia>} */
+        this._createDrawMediaBind = this._createDrawMedia.bind(this);
+
+        /**
+         * @type {Worker?}
+         */
+        this._worker = null;
+
+        /**
+         * @type {Uint8Array?}
+         */
+        this._resvgFontBuffer = null;
+
+        // /** @type {import('dictionary-database').ApiMap} */
+        // this._apiMap = createApiMap([
+        //     ['drawMedia', this._onDrawMedia.bind(this)],
+        // ]);
     }
 
     /** */
     async prepare() {
-        console.log("Preparing: " + this._dbName);
-        await this._db.open(
-            this._dbName,
-            60,
+        console.log('Preparing: ' + this._dbName);
+        // do not do upgrades in web workers as they are considered to be children of the main thread and are not responsible for database upgrades
+        // NOTE: RN does not have workers :)
+        const isWorker = false
+        const upgrade =
             /** @type {import('database').StructureDefinition<import('dictionary-database').ObjectStoreName>[]} */
             ([
                 /** @type {import('database').StructureDefinition<import('dictionary-database').ObjectStoreName>} */
-                // NOTE: Remember that you added keyPath to id in the commented out code
                 ({
                     version: 20,
                     stores: {
                         terms: {
-                            primaryKey: {
-                                keyPath: "id",
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "expression", "reading"],
+                            primaryKey: {keyPath: 'id', autoIncrement: true},
+                            indices: ['dictionary', 'expression', 'reading'],
                         },
                         kanji: {
-                            // primaryKey: { keyPath: "id", autoIncrement: true },
-                            primaryKey: {
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "character"],
+                            primaryKey: {autoIncrement: true},
+                            indices: ['dictionary', 'character'],
                         },
                         tagMeta: {
-                            // primaryKey: { keyPath: "id", autoIncrement: true },
-                            primaryKey: {
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary"],
+                            primaryKey: {autoIncrement: true},
+                            indices: ['dictionary'],
                         },
                         dictionaries: {
-                            primaryKey: {
-                                keyPath: "id",
-                                autoIncrement: true
-                            },
+                            // TODO: Figure out why we added keyPath
+                            primaryKey: {keyPath: 'id', autoIncrement: true},
                             // primaryKey: { autoIncrement: true },
-                            indices: ["title", "version"],
+                            indices: ['title', 'version'],
                         },
                     },
                 }),
@@ -130,25 +115,16 @@ export class DictionaryDatabase {
                     version: 30,
                     stores: {
                         termMeta: {
-                            // primaryKey: { keyPath: "id", autoIncrement: true },
-                            primaryKey: {
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "expression"],
+                            primaryKey: {autoIncrement: true},
+                            indices: ['dictionary', 'expression'],
                         },
                         kanjiMeta: {
-                            // primaryKey: { keyPath: "id", autoIncrement: true },
-                            primaryKey: {
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "character"],
+                            primaryKey: {autoIncrement: true},
+                            indices: ['dictionary', 'character'],
                         },
                         tagMeta: {
-                            // primaryKey: { keyPath: "id", autoIncrement: true },
-                            primaryKey: {
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "name"],
+                            primaryKey: {autoIncrement: true},
+                            indices: ['dictionary', 'name'],
                         },
                     },
                 },
@@ -156,11 +132,8 @@ export class DictionaryDatabase {
                     version: 40,
                     stores: {
                         terms: {
-                            primaryKey: {
-                                keyPath: "id",
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "expression", "reading", "sequence"],
+                            primaryKey: {keyPath: 'id', autoIncrement: true},
+                            indices: ['dictionary', 'expression', 'reading', 'sequence'],
                         },
                     },
                 },
@@ -168,18 +141,8 @@ export class DictionaryDatabase {
                     version: 50,
                     stores: {
                         terms: {
-                            primaryKey: {
-                                keyPath: "id",
-                                autoIncrement: true
-                            },
-                            indices: [
-                                "dictionary",
-                                "expression",
-                                "reading",
-                                "sequence",
-                                "expressionReverse",
-                                "readingReverse",
-                            ],
+                            primaryKey: {keyPath: 'id', autoIncrement: true},
+                            indices: ['dictionary', 'expression', 'reading', 'sequence', 'expressionReverse', 'readingReverse'],
                         },
                     },
                 },
@@ -187,16 +150,35 @@ export class DictionaryDatabase {
                     version: 60,
                     stores: {
                         media: {
-                            primaryKey: {
-                                keyPath: "id",
-                                autoIncrement: true
-                            },
-                            indices: ["dictionary", "path"],
+                            primaryKey: {keyPath: 'id', autoIncrement: true},
+                            indices: ['dictionary', 'path'],
                         },
                     },
                 },
-            ]),
+            ]);
+        await this._db.open(
+            this._dbName,
+            60,
+            isWorker ? null : upgrade,
         );
+
+        // when we are not a worker ourselves, create a worker which is basically just a wrapper around this class, which we can use to offload some functions to
+        // if (!isWorker) {
+        //     this._worker = new Worker('/js/dictionary/dictionary-database-worker-main.js', {type: 'module'});
+        //     this._worker.addEventListener('error', (event) => {
+        //         log.log('Worker terminated with error:', event);
+        //     });
+        //     this._worker.addEventListener('unhandledrejection', (event) => {
+        //         log.log('Unhandled promise rejection in worker:', event);
+        //     });
+        // } else {
+        //     // when we are the worker, prepare to need to do some SVG work and load appropriate wasm & fonts
+        //     await initWasm(fetch('/lib/resvg.wasm'));
+        //
+        //     const font = await fetch('/fonts/NotoSansJP-Regular.ttf');
+        //     const fontData = await font.arrayBuffer();
+        //     this._resvgFontBuffer = new Uint8Array(fontData);
+        // }
     }
 
     /** */
@@ -216,11 +198,15 @@ export class DictionaryDatabase {
      */
     async purge() {
         if (this._db.isOpening()) {
-            throw new Error("Cannot purge database while opening");
+            throw new Error('Cannot purge database while opening');
         }
         if (this._db.isOpen()) {
             this._db.close();
         }
+        // if (this._worker !== null) {
+        //     this._worker.terminate();
+        //     this._worker = null;
+        // }
         let result = false;
         try {
             await Database.deleteDatabase(this._dbName);
@@ -241,15 +227,15 @@ export class DictionaryDatabase {
         /** @type {[objectStoreName: import('dictionary-database').ObjectStoreName, key: string][][]} */
         const targetGroups = [
             [
-                ["kanji", "dictionary"],
-                ["kanjiMeta", "dictionary"],
-                ["terms", "dictionary"],
-                ["termMeta", "dictionary"],
-                ["tagMeta", "dictionary"],
-                ["media", "dictionary"],
+                ['kanji', 'dictionary'],
+                ['kanjiMeta', 'dictionary'],
+                ['terms', 'dictionary'],
+                ['termMeta', 'dictionary'],
+                ['tagMeta', 'dictionary'],
+                ['media', 'dictionary'],
             ],
             [
-                ["dictionaries", "title"]
+                ['dictionaries', 'title'],
             ],
         ];
 
@@ -279,7 +265,7 @@ export class DictionaryDatabase {
         const onProgressWrapper = () => {
             const processed = progressData.processed + 1;
             progressData.processed = processed;
-            if (processed % progressRate === 0 || processed === progressData.count) {
+            if ((processed % progressRate) === 0 || processed === progressData.count) {
                 onProgress(progressData);
             }
         };
@@ -287,14 +273,8 @@ export class DictionaryDatabase {
         for (const targets of targetGroups) {
             const promises = [];
             for (const [objectStoreName, indexName] of targets) {
-                const query = IDBKeyRange.only(dictionaryName);
-                const promise = this._db.bulkDelete(
-                    objectStoreName,
-                    indexName,
-                    query,
-                    filterKeys,
-                    onProgressWrapper,
-                );
+                const query = dictionaryName;
+                const promise = this._db.bulkDelete(objectStoreName, indexName, query, filterKeys, onProgressWrapper);
                 promises.push(promise);
             }
             await Promise.all(promises);
@@ -311,44 +291,28 @@ export class DictionaryDatabase {
         const visited = new Set();
         /** @type {import('dictionary-database').FindPredicate<string, import('dictionary-database').DatabaseTermEntryWithId>} */
         const predicate = (row) => {
-            if (!dictionaries.has(row.dictionary)) {
-                return false;
-            }
-            const {
-                id
-            } = row;
-            if (visited.has(id)) {
-                return false;
-            }
+            if (!dictionaries.has(row.dictionary)) { return false; }
+            const {id} = row;
+            if (visited.has(id)) { return false; }
             visited.add(id);
             return true;
         };
 
-        const indexNames =
-            matchType === "suffix" ?
-            ["expressionReverse", "readingReverse"] :
-            ["expression", "reading"];
+        const indexNames = (matchType === 'suffix') ? ['expressionReverse', 'readingReverse'] : ['expression', 'reading'];
 
         let createQuery = this._createOnlyQuery1;
         switch (matchType) {
-            case "prefix":
+            case 'prefix':
                 createQuery = this._createBoundQuery1;
                 break;
-            case "suffix":
+            case 'suffix':
                 createQuery = this._createBoundQuery2;
                 break;
         }
 
         const createResult = this._createTermGeneric.bind(this, matchType);
 
-        return this._findMultiBulk(
-            "terms",
-            indexNames,
-            termList,
-            createQuery,
-            predicate,
-            createResult,
-        );
+        return this._findMultiBulk('terms', indexNames, termList, createQuery, predicate, createResult);
     }
 
     /**
@@ -358,16 +322,8 @@ export class DictionaryDatabase {
      */
     findTermsExactBulk(termList, dictionaries) {
         /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').TermExactRequest, import('dictionary-database').DatabaseTermEntry>} */
-        const predicate = (row, item) =>
-            row.reading === item.reading && dictionaries.has(row.dictionary);
-        return this._findMultiBulk(
-            "terms",
-            ["expression"],
-            termList,
-            this._createOnlyQuery3,
-            predicate,
-            this._createTermBind1,
-        );
+        const predicate = (row, item) => (row.reading === item.reading && dictionaries.has(row.dictionary));
+        return this._findMultiBulk('terms', ['expression'], termList, this._createOnlyQuery3, predicate, this._createTermBind1);
     }
 
     /**
@@ -376,15 +332,8 @@ export class DictionaryDatabase {
      */
     findTermsBySequenceBulk(items) {
         /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').DictionaryAndQueryRequest, import('dictionary-database').DatabaseTermEntry>} */
-        const predicate = (row, item) => row.dictionary === item.dictionary;
-        return this._findMultiBulk(
-            "terms",
-            ["sequence"],
-            items,
-            this._createOnlyQuery2,
-            predicate,
-            this._createTermBind2,
-        );
+        const predicate = (row, item) => (row.dictionary === item.dictionary);
+        return this._findMultiBulk('terms', ['sequence'], items, this._createOnlyQuery2, predicate, this._createTermBind2);
     }
 
     /**
@@ -395,14 +344,7 @@ export class DictionaryDatabase {
     findTermMetaBulk(termList, dictionaries) {
         /** @type {import('dictionary-database').FindPredicate<string, import('dictionary-database').DatabaseTermMeta>} */
         const predicate = (row) => dictionaries.has(row.dictionary);
-        return this._findMultiBulk(
-            "termMeta",
-            ["expression"],
-            termList,
-            this._createOnlyQuery1,
-            predicate,
-            this._createTermMetaBind,
-        );
+        return this._findMultiBulk('termMeta', ['expression'], termList, this._createOnlyQuery1, predicate, this._createTermMetaBind);
     }
 
     /**
@@ -411,17 +353,10 @@ export class DictionaryDatabase {
      * @returns {Promise<import('dictionary-database').KanjiEntry[]>}
      */
     findKanjiBulk(kanjiList, dictionaries) {
+        // TODO: Change predicate to something sqlite-expo compatible
         /** @type {import('dictionary-database').FindPredicate<string, import('dictionary-database').DatabaseKanjiEntry>} */
         const predicate = (row) => dictionaries.has(row.dictionary);
-        // TODO: Change predicate to something sqlite-expo compatible
-        return this._findMultiBulk(
-            "kanji",
-            ["character"],
-            kanjiList,
-            this._createOnlyQuery1,
-            predicate,
-            this._createKanjiBind,
-        );
+        return this._findMultiBulk('kanji', ['character'], kanjiList, this._createOnlyQuery1, predicate, this._createKanjiBind);
     }
 
     /**
@@ -432,14 +367,7 @@ export class DictionaryDatabase {
     findKanjiMetaBulk(kanjiList, dictionaries) {
         /** @type {import('dictionary-database').FindPredicate<string, import('dictionary-database').DatabaseKanjiMeta>} */
         const predicate = (row) => dictionaries.has(row.dictionary);
-        return this._findMultiBulk(
-            "kanjiMeta",
-            ["character"],
-            kanjiList,
-            this._createOnlyQuery1,
-            predicate,
-            this._createKanjiMetaBind,
-        );
+        return this._findMultiBulk('kanjiMeta', ['character'], kanjiList, this._createOnlyQuery1, predicate, this._createKanjiMetaBind);
     }
 
     /**
@@ -448,14 +376,8 @@ export class DictionaryDatabase {
      */
     findTagMetaBulk(items) {
         /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').DictionaryAndQueryRequest, import('dictionary-database').Tag>} */
-        const predicate = (row, item) => row.dictionary === item.dictionary;
-        return this._findFirstBulk(
-            "tagMeta",
-            "name",
-            items,
-            this._createOnlyQuery2,
-            predicate,
-        );
+        const predicate = (row, item) => (row.dictionary === item.dictionary);
+        return this._findFirstBulk('tagMeta', 'name', items, this._createOnlyQuery2, predicate);
     }
 
     /**
@@ -465,17 +387,7 @@ export class DictionaryDatabase {
      */
     findTagForTitle(name, dictionary) {
         const query = IDBKeyRange.only(name);
-        return this._db.find(
-            "tagMeta",
-            "name",
-            query,
-            (row) =>
-            /** @type {import('dictionary-database').Tag} */
-            (row).dictionary ===
-            dictionary,
-            null,
-            null,
-        );
+        return this._db.find('tagMeta', 'name', query, (row) => (/** @type {import('dictionary-database').Tag} */ (row).dictionary === dictionary), null, null);
     }
 
     /**
@@ -484,26 +396,106 @@ export class DictionaryDatabase {
      */
     getMedia(items) {
         /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').MediaRequest, import('dictionary-database').MediaDataArrayBufferContent>} */
-        const predicate = (row, item) => row.dictionary === item.dictionary;
-        return this._findMultiBulk(
-            "media",
-            ["path"],
-            items,
-            this._createOnlyQuery4,
-            predicate,
-            this._createMediaBind,
-        );
+        const predicate = (row, item) => (row.dictionary === item.dictionary);
+        return this._findMultiBulk('media', ['path'], items, this._createOnlyQuery4, predicate, this._createMediaBind);
     }
+
+    // /**
+    //  * @param {import('dictionary-database').DrawMediaRequest[]} items
+    //  * @param {MessagePort} source
+    //  */
+    // async drawMedia(items, source) {
+    //     if (this._worker !== null) { // if a worker is available, offload the work to it
+    //         this._worker.postMessage({action: 'drawMedia', params: {items}}, [source]);
+    //         return;
+    //     }
+    //     // otherwise, you are the worker, so do the work
+    //     safePerformance.mark('drawMedia:start');
+    //
+    //     // merge items with the same path to reduce the number of database queries. collects the canvases into a single array for each path.
+    //     /** @type {Map<string, import('dictionary-database').DrawMediaGroupedRequest>} */
+    //     const groupedItems = new Map();
+    //     for (const item of items) {
+    //         const {path, dictionary, canvasIndex, canvasWidth, canvasHeight, generation} = item;
+    //         const key = `${path}:::${dictionary}`;
+    //         if (!groupedItems.has(key)) {
+    //             groupedItems.set(key, {path, dictionary, canvasIndexes: [], canvasWidth, canvasHeight, generation});
+    //         }
+    //         groupedItems.get(key)?.canvasIndexes.push(canvasIndex);
+    //     }
+    //     const groupedItemsArray = [...groupedItems.values()];
+    //
+    //     /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').MediaRequest, import('dictionary-database').MediaDataArrayBufferContent>} */
+    //     const predicate = (row, item) => (row.dictionary === item.dictionary);
+    //     const results = await this._findMultiBulk('media', ['path'], groupedItemsArray, this._createOnlyQuery5, predicate, this._createDrawMediaBind);
+    //
+    //     // move all svgs to front to have a hotter loop
+    //     results.sort((a, _b) => (a.mediaType === 'image/svg+xml' ? -1 : 1));
+    //
+    //     safePerformance.mark('drawMedia:draw:start');
+    //     for (const m of results) {
+    //         if (m.mediaType === 'image/svg+xml') {
+    //             safePerformance.mark('drawMedia:draw:svg:start');
+    //             /** @type {import('@resvg/resvg-wasm').ResvgRenderOptions} */
+    //             const opts = {
+    //                 fitTo: {
+    //                     mode: 'width',
+    //                     value: m.canvasWidth,
+    //                 },
+    //                 font: {
+    //                     fontBuffers: this._resvgFontBuffer !== null ? [this._resvgFontBuffer] : [],
+    //                 },
+    //             };
+    //             const resvgJS = new Resvg(new Uint8Array(m.content), opts);
+    //             const render = resvgJS.render();
+    //             source.postMessage({action: 'drawBufferToCanvases', params: {buffer: render.pixels.buffer, width: render.width, height: render.height, canvasIndexes: m.canvasIndexes, generation: m.generation}}, [render.pixels.buffer]);
+    //             safePerformance.mark('drawMedia:draw:svg:end');
+    //             safePerformance.measure('drawMedia:draw:svg', 'drawMedia:draw:svg:start', 'drawMedia:draw:svg:end');
+    //         } else {
+    //             safePerformance.mark('drawMedia:draw:raster:start');
+    //
+    //             // ImageDecoder is slightly faster than Blob/createImageBitmap, but
+    //             // 1) it is not available in Firefox <133
+    //             // 2) it is available in Firefox >=133, but it's not possible to transfer VideoFrames cross-process
+    //             //
+    //             // So the second branch is a fallback for all versions of Firefox and doesn't use ImageDecoder at all
+    //             // The second branch can eventually be changed to use ImageDecoder when we are okay with dropping support for Firefox <133
+    //             // The branches can be unified entirely when Firefox implements support for transferring VideoFrames cross-process in postMessage
+    //             if ('serviceWorker' in navigator) { // this is just a check for chrome, we don't actually use service worker functionality here
+    //                 const imageDecoder = new ImageDecoder({type: m.mediaType, data: m.content});
+    //                 await imageDecoder.decode().then((decodedImageResult) => {
+    //                     source.postMessage({action: 'drawDecodedImageToCanvases', params: {decodedImage: decodedImageResult.image, canvasIndexes: m.canvasIndexes, generation: m.generation}}, [decodedImageResult.image]);
+    //                 });
+    //             } else {
+    //                 const image = new Blob([m.content], {type: m.mediaType});
+    //                 await createImageBitmap(image, {resizeWidth: m.canvasWidth, resizeHeight: m.canvasHeight, resizeQuality: 'high'}).then((decodedImage) => {
+    //                     // we need to do a dumb hack where we convert this ImageBitmap to an ImageData by drawing it to a temporary canvas, because Firefox doesn't support transferring ImageBitmaps cross-process
+    //                     const canvas = new OffscreenCanvas(decodedImage.width, decodedImage.height);
+    //                     const ctx = canvas.getContext('2d');
+    //                     if (ctx !== null) {
+    //                         ctx.drawImage(decodedImage, 0, 0);
+    //                         const imageData = ctx.getImageData(0, 0, decodedImage.width, decodedImage.height);
+    //                         source.postMessage({action: 'drawBufferToCanvases', params: {buffer: imageData.data.buffer, width: decodedImage.width, height: decodedImage.height, canvasIndexes: m.canvasIndexes, generation: m.generation}}, [imageData.data.buffer]);
+    //                     }
+    //                 });
+    //             }
+    //             safePerformance.mark('drawMedia:draw:raster:end');
+    //             safePerformance.measure('drawMedia:draw:raster', 'drawMedia:draw:raster:start', 'drawMedia:draw:raster:end');
+    //         }
+    //     }
+    //     safePerformance.mark('drawMedia:draw:end');
+    //     safePerformance.measure('drawMedia:draw', 'drawMedia:draw:start', 'drawMedia:draw:end');
+    //
+    //     safePerformance.mark('drawMedia:end');
+    //     safePerformance.measure('drawMedia', 'drawMedia:start', 'drawMedia:end');
+    // }
 
     /**
      * @returns {Promise<import('dictionary-importer').Summary[]>}
      */
     async getDictionaryInfo() {
-        console.log("getDictionaryInfo called");
-        // TODO: Clean this up
-        return new Promise((resolve, reject) => {
-            this._db.getAllEntries("dictionaries").then(resolve).catch(reject);
-        });
+        // TODO: Verify implementation follows Yomitan source
+        return this._db.getAllEntries('dictionaries');
     }
 
     /**
@@ -512,72 +504,9 @@ export class DictionaryDatabase {
      * @returns {Promise<import('dictionary-database').DictionaryCounts>}
      */
     getDictionaryCounts(dictionaryNames, getTotal) {
-        console.log("getDictionaryCounts called");
-        console.log("Dictionary Names are");
-        console.log(dictionaryNames);
-        console.log("getTotal is");
-        console.log(getTotal);
+        // TODO: Verify implementation follows Yomitan source
+        console.log(`getDictionaryCounts called: ${dictionaryNames}, ${getTotal}`);
         return this._db.getDictionaryCounts(dictionaryNames, getTotal);
-
-        // return new Promise((resolve, reject) => {
-        //   const targets = [
-        //     ["kanji", "dictionary"],
-        //     ["kanjiMeta", "dictionary"],
-        //     ["terms", "dictionary"],
-        //     ["termMeta", "dictionary"],
-        //     ["tagMeta", "dictionary"],
-        //     ["media", "dictionary"],
-        //   ];
-        //   const objectStoreNames = targets.map(
-        //     ([objectStoreName]) => objectStoreName,
-        //   );
-        //   const transaction = this._db.transaction(objectStoreNames, "readonly");
-        //   const databaseTargets = targets.map(([objectStoreName, indexName]) => {
-        //     const objectStore = transaction.objectStore(objectStoreName);
-        //     const index = objectStore.index(indexName);
-        //     return { objectStore, index };
-        //   });
-        //
-        //   /** @type {import('database').CountTarget[]} */
-        //   const countTargets = [];
-        //   if (getTotal) {
-        //     for (const { objectStore } of databaseTargets) {
-        //       countTargets.push([objectStore, void 0]);
-        //     }
-        //   }
-        //   for (const dictionaryName of dictionaryNames) {
-        //     const query = IDBKeyRange.only(dictionaryName);
-        //     for (const { index } of databaseTargets) {
-        //       countTargets.push([index, query]);
-        //     }
-        //   }
-        //
-        //   /**
-        //    * @param {number[]} results
-        //    */
-        //   const onCountComplete = (results) => {
-        //     const resultCount = results.length;
-        //     const targetCount = targets.length;
-        //     /** @type {import('dictionary-database').DictionaryCountGroup[]} */
-        //     const counts = [];
-        //     for (let i = 0; i < resultCount; i += targetCount) {
-        //       /** @type {import('dictionary-database').DictionaryCountGroup} */
-        //       const countGroup = {};
-        //       for (let j = 0; j < targetCount; ++j) {
-        //         countGroup[targets[j][0]] = results[i + j];
-        //       }
-        //       counts.push(countGroup);
-        //     }
-        //     const total = getTotal
-        //       ? /** @type {import('dictionary-database').DictionaryCountGroup} */ (
-        //           counts.shift()
-        //         )
-        //       : null;
-        //     resolve({ total, counts });
-        //   };
-        //
-        //   this._db.bulkCount(countTargets, onCountComplete, reject);
-        // });
     }
 
     /**
@@ -585,22 +514,21 @@ export class DictionaryDatabase {
      * @returns {Promise<boolean>}
      */
     async dictionaryExists(title) {
+        // TODO: Verify implementation follows Yomitan source
         const query = title;
-        // console.log("Query:");
-        // console.log(query);
+        // console.log(`Query: ${query}`);
         const result = await this._db.find(
-            "dictionaries",
-            "title",
+            'dictionaries',
+            'title',
             query,
             null,
             null,
             void 0,
         );
-        // console.log("Result of dictionaryExists:");
-        // console.log(result);
-        // console.log(typeof result !== "undefined");
+        // console.log(`Result of dictionaryExists: ${result}`);
+        // console.log(typeof result !== 'undefined');
         // TODO: What gets returned is null, and not undefined. I need to idetnify what happens in Yomitan original codebase.
-        return typeof result !== "undefined";
+        return typeof result !== 'undefined';
     }
 
     /**
@@ -612,11 +540,10 @@ export class DictionaryDatabase {
      * @returns {Promise<void>}
      */
     bulkAdd(objectStoreName, items, start, count) {
+        // TODO: Verify implementation follows Yomitan source
         try {
             return this._db.bulkAdd(objectStoreName, items, start, count);
         } catch (e) {
-            console.log("Error bulk adding data");
-            console.log(e);
             throw e;
         }
     }
@@ -635,14 +562,8 @@ export class DictionaryDatabase {
      * @param {import('dictionary-database').CreateResult<TItem, TRow, TResult>} createResult
      * @returns {Promise<TResult[]>}
      */
-    _findMultiBulk(
-        objectStoreName,
-        indexNames,
-        items,
-        createQuery,
-        predicate,
-        createResult,
-    ) {
+    _findMultiBulk(objectStoreName, indexNames, items, createQuery, predicate, createResult) {
+        // TODO: Verify implementation follows Yomitan source
         return this._db.findMultiBulk(
             objectStoreName,
             indexNames,
@@ -664,6 +585,7 @@ export class DictionaryDatabase {
      * @returns {Promise<(TRow|undefined)[]>}
      */
     _findFirstBulk(objectStoreName, indexName, items, createQuery, predicate) {
+        // TODO: Verify implementation follows Yomitan source
         return this._db.findFirstBulk(
             objectStoreName,
             indexName,
@@ -680,10 +602,10 @@ export class DictionaryDatabase {
      * @returns {import('dictionary-database').TermEntry}
      */
     _createTermGeneric(matchType, row, data) {
-        const matchSourceIsTerm = data.indexIndex === 0;
-        const matchSource = matchSourceIsTerm ? "term" : "reading";
+        const matchSourceIsTerm = (data.indexIndex === 0);
+        const matchSource = (matchSourceIsTerm ? 'term' : 'reading');
         if ((matchSourceIsTerm ? row.expression : row.reading) === data.item) {
-            matchType = "exact";
+            matchType = 'exact';
         }
         return this._createTerm(matchSource, matchType, row, data.itemIndex);
     }
@@ -694,7 +616,7 @@ export class DictionaryDatabase {
      * @returns {import('dictionary-database').TermEntry}
      */
     _createTermExact(row, data) {
-        return this._createTerm("term", "exact", row, data.itemIndex);
+        return this._createTerm('term', 'exact', row, data.itemIndex);
     }
 
     /**
@@ -703,7 +625,7 @@ export class DictionaryDatabase {
      * @returns {import('dictionary-database').TermEntry}
      */
     _createTermSequenceExact(row, data) {
-        return this._createTerm("sequence", "exact", row, data.itemIndex);
+        return this._createTerm('sequence', 'exact', row, data.itemIndex);
     }
 
     /**
@@ -714,9 +636,7 @@ export class DictionaryDatabase {
      * @returns {import('dictionary-database').TermEntry}
      */
     _createTerm(matchSource, matchType, row, index) {
-        const {
-            sequence
-        } = row;
+        const {sequence} = row;
         return {
             index,
             matchType,
@@ -730,7 +650,7 @@ export class DictionaryDatabase {
             score: row.score,
             dictionary: row.dictionary,
             id: row.id,
-            sequence: typeof sequence === "number" ? sequence : -1,
+            sequence: typeof sequence === 'number' ? sequence : -1,
         };
     }
 
@@ -739,12 +659,8 @@ export class DictionaryDatabase {
      * @param {import('dictionary-database').FindMultiBulkData<string>} data
      * @returns {import('dictionary-database').KanjiEntry}
      */
-    _createKanji(row, {
-        itemIndex: index
-    }) {
-        const {
-            stats
-        } = row;
+    _createKanji(row, {itemIndex: index}) {
+        const {stats} = row;
         return {
             index,
             character: row.character,
@@ -752,7 +668,7 @@ export class DictionaryDatabase {
             kunyomi: this._splitField(row.kunyomi),
             tags: this._splitField(row.tags),
             definitions: row.meanings,
-            stats: typeof stats === "object" && stats !== null ? stats : {},
+            stats: typeof stats === 'object' && stats !== null ? stats : {},
             dictionary: row.dictionary,
         };
     }
@@ -763,27 +679,14 @@ export class DictionaryDatabase {
      * @returns {import('dictionary-database').TermMeta}
      * @throws {Error}
      */
-    _createTermMeta({
-        expression: term,
-        mode,
-        data,
-        dictionary
-    }, {
-        itemIndex: index
-    }, ) {
+    _createTermMeta({expression: term, mode, data, dictionary}, {itemIndex: index}) {
         switch (mode) {
-            case "freq":
-                return {
-                    index, term, mode, data, dictionary
-                };
-            case "pitch":
-                return {
-                    index, term, mode, data, dictionary
-                };
-            case "ipa":
-                return {
-                    index, term, mode, data, dictionary
-                };
+            case 'freq':
+                return {index, term, mode, data, dictionary};
+            case 'pitch':
+                return {index, term, mode, data, dictionary};
+            case 'ipa':
+                return {index, term, mode, data, dictionary};
             default:
                 throw new Error(`Unknown mode: ${mode}`);
         }
@@ -794,21 +697,8 @@ export class DictionaryDatabase {
      * @param {import('dictionary-database').FindMultiBulkData<string>} data
      * @returns {import('dictionary-database').KanjiMeta}
      */
-    _createKanjiMeta({
-        character,
-        mode,
-        data,
-        dictionary
-    }, {
-        itemIndex: index
-    }, ) {
-        return {
-            index,
-            character,
-            mode,
-            data,
-            dictionary
-        };
+    _createKanjiMeta({character, mode, data, dictionary}, {itemIndex: index}) {
+        return {index, character, mode, data, dictionary};
     }
 
     /**
@@ -816,26 +706,19 @@ export class DictionaryDatabase {
      * @param {import('dictionary-database').FindMultiBulkData<import('dictionary-database').MediaRequest>} data
      * @returns {import('dictionary-database').Media}
      */
-    _createMedia(row, {
-        itemIndex: index
-    }) {
-        const {
-            dictionary,
-            path,
-            mediaType,
-            width,
-            height,
-            content
-        } = row;
-        return {
-            index,
-            dictionary,
-            path,
-            mediaType,
-            width,
-            height,
-            content
-        };
+    _createMedia(row, {itemIndex: index}) {
+        const {dictionary, path, mediaType, width, height, content} = row;
+        return {index, dictionary, path, mediaType, width, height, content};
+    }
+
+    /**
+     * @param {import('dictionary-database').MediaDataArrayBufferContent} row
+     * @param {import('dictionary-database').FindMultiBulkData<import('dictionary-database').DrawMediaGroupedRequest>} data
+     * @returns {import('dictionary-database').DrawMedia}
+     */
+    _createDrawMedia(row, {itemIndex: index, item: {canvasIndexes, canvasWidth, canvasHeight, generation}}) {
+        const {dictionary, path, mediaType, width, height, content} = row;
+        return {index, dictionary, path, mediaType, width, height, content, canvasIndexes, canvasWidth, canvasHeight, generation};
     }
 
     /**

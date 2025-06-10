@@ -1397,7 +1397,29 @@ export class DictionaryController {
      * @param {import('dictionary-worker').DeleteProgressCallback} onProgress
      */
     async _deleteDictionaryInternal(dictionaryTitle, onProgress) {
-        await new DictionaryWorker().deleteDictionary(dictionaryTitle, onProgress);
+        /** @returns {Promise<void>} */
+        async function nativeDeleteDictionary() {
+            const params = {dictionaryTitle, onProgress};
+            return await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage({ action: 'nativeDeleteDictionary', params }, (response) => {
+                    resolve(response);
+                })
+            });
+        }
+
+        function _onMessage(details) {
+            if (details.complete) { return; }
+            const {action, params} = details;
+            if (action === 'progress') {
+                onProgress(...params);
+            }
+        }
+
+        chrome.runtime.onMessage.addListener(_onMessage);
+        await nativeDeleteDictionary();
+        chrome.runtime.onMessage.removeListener(_onMessage);
+
+        // await new DictionaryWorker().deleteDictionary(dictionaryTitle, onProgress);
         /** @type {import('core').DeferredPromiseDetails<void>} */
         const {promise: dictionariesUpdatePromise, resolve} = deferPromise();
         this._onDictionariesUpdate = resolve;

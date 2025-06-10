@@ -654,7 +654,7 @@ export class DictionaryImportController {
         async function nativeImportDictionary() {
             const params = {uri: file.uri, importDetails, onProgress};
             return await new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage({ action: 'nativeImportDictionary', params }, (response) => { 
+                chrome.runtime.sendMessage({ action: 'nativeImportDictionary', params }, (response) => {
                     resolve(response);
                 })
             });
