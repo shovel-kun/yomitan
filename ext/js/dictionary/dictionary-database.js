@@ -80,7 +80,7 @@ export class DictionaryDatabase {
 
     /** */
     async prepare() {
-        console.log('Preparing: ' + this._dbName);
+        console.log(`Preparing: ${this._dbName}`);
         // do not do upgrades in web workers as they are considered to be children of the main thread and are not responsible for database upgrades
         // NOTE: RN does not have workers :)
         const isWorker = false
@@ -200,16 +200,16 @@ export class DictionaryDatabase {
         if (this._db.isOpening()) {
             throw new Error('Cannot purge database while opening');
         }
-        if (this._db.isOpen()) {
-            this._db.close();
-        }
+        // if (this._db.isOpen()) {
+        //     this._db.close();
+        // }
         // if (this._worker !== null) {
         //     this._worker.terminate();
         //     this._worker = null;
         // }
         let result = false;
         try {
-            await Database.deleteDatabase(this._dbName);
+            await this._db.deleteDatabase(this._dbName);
             result = true;
         } catch (e) {
             log.error(e);
@@ -253,20 +253,22 @@ export class DictionaryDatabase {
         };
 
         /**
-         * @param {IDBValidKey[]} keys
-         * @returns {IDBValidKey[]}
+         * @param {string[]} keys
+         * @returns {string[]}
          */
         const filterKeys = (keys) => {
             ++progressData.storesProcesed;
             progressData.count += keys.length;
-            onProgress(progressData);
+            // onProgress(progressData);
+            chrome.runtime.sendMessage({action: 'progress', params: progressData});
             return keys;
         };
         const onProgressWrapper = () => {
             const processed = progressData.processed + 1;
             progressData.processed = processed;
             if ((processed % progressRate) === 0 || processed === progressData.count) {
-                onProgress(progressData);
+                // onProgress(progressData);
+                chrome.runtime.sendMessage({action: 'progress', params: progressData});
             }
         };
 
@@ -277,7 +279,7 @@ export class DictionaryDatabase {
                 const promise = this._db.bulkDelete(objectStoreName, indexName, query, filterKeys, onProgressWrapper);
                 promises.push(promise);
             }
-            await Promise.all(promises);
+            await Promise.all(promises).catch(console.error);
         }
     }
 
@@ -503,10 +505,70 @@ export class DictionaryDatabase {
      * @param {boolean} getTotal
      * @returns {Promise<import('dictionary-database').DictionaryCounts>}
      */
-    getDictionaryCounts(dictionaryNames, getTotal) {
+    async getDictionaryCounts(dictionaryNames, getTotal) {
         // TODO: Verify implementation follows Yomitan source
-        console.log(`getDictionaryCounts called: ${dictionaryNames}, ${getTotal}`);
-        return this._db.getDictionaryCounts(dictionaryNames, getTotal);
+        const tables = [
+            { name: 'kanji', column: 'dictionary' },
+            { name: 'kanjiMeta', column: 'dictionary' },
+            { name: 'terms', column: 'dictionary' },
+            { name: 'termMeta', column: 'dictionary' },
+            { name: 'tagMeta', column: 'dictionary' },
+            { name: 'media', column: 'dictionary' }
+        ];
+
+        /** @type {{table: string, column: string, query: string|null}[]} */
+        const countOperations = [];
+
+        // Add total counts if requested
+        if (getTotal) {
+            tables.forEach(table => {
+                countOperations.push({
+                    table: table.name,
+                    column: table.column,
+                    query: null
+                });
+            });
+        }
+
+        // Add per-dictionary counts
+        dictionaryNames.forEach(name => {
+            tables.forEach(table => {
+                countOperations.push({
+                    table: table.name,
+                    column: table.column,
+                    query: name
+                });
+            });
+        });
+
+        const rawCounts = await this._db.bulkCount(countOperations);
+
+        /** @type {import('dictionary-database').DictionaryCounts} */
+        const result = {
+            total: getTotal ? {} : null,
+            counts: []
+        };
+
+        let resultIndex = 0;
+
+        // Handle totals if they exist
+        if (getTotal) {
+            tables.forEach(table => {
+                result.total[table.name] = rawCounts[resultIndex++];
+            });
+        }
+
+        // Handle per-dictionary counts
+        dictionaryNames.forEach(() => {
+            /** @type {import('dictionary-database').DictionaryCountGroup} */
+            const group = {};
+            tables.forEach(table => {
+                group[table.name] = rawCounts[resultIndex++];
+            });
+            result.counts.push(group);
+        });
+
+        return result;
     }
 
     /**

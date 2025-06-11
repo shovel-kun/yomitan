@@ -18,6 +18,9 @@
 
 // NOTE: This will be found
 import DbConnection from '@/src/database/DbConnection';
+// import * as FileSystem from "expo-file-system";
+// import {IOS_LIBRARY_PATH, ANDROID_DATABASE_PATH} from '@op-engineering/op-sqlite';
+// import { Platform } from 'react-native';
 
 // TODO: Check if we need any updates.
 /**
@@ -34,7 +37,7 @@ export class Database {
     /**
      * @param {string} databaseName
      * @param {number} version
-     * @param {import('database').StructureDefinition<TObjectStoreName>[]?} structure
+     * @param {import('database').StructureDefinition<TObjectStoreName>[]} structure
      */
     async open(databaseName, version, structure) {
         if (this._db !== null) {
@@ -52,10 +55,13 @@ export class Database {
               throw new Error('Database is null');
             }
 
-            await this._db.execute('PRAGMA journal_mode = WAL;');
+            // Safety level may not be changed inside a transaction
+            // await this._db.execute('PRAGMA journal_mode = WAL;');
+            // await this._db.execute('PRAGMA synchronous = normal;');
+            // await this._db.execute('PRAGMA journal_size_limit = 6144000;');
 
             const {rows} = await this._db.execute('PRAGMA user_version');
-            const currentVersion = rows[0].user_version?.valueOf();
+            const currentVersion = rows[0].user_version;
 
             if (typeof currentVersion !== 'number') {
               throw new Error('Current version is not a number');
@@ -83,13 +89,10 @@ export class Database {
 
         try {
             for (const schema of structure) {
-              if (
-                schema.version > currentVersion &&
-                schema.version <= targetVersion
-              ) {
-                await this._applySchemaChanges(schema);
-                await this._db.execute(`PRAGMA user_version = ${schema.version};`);
-              }
+                if (schema.version > currentVersion && schema.version <= targetVersion) {
+                    await this._applySchemaChanges(schema);
+                    await this._db.execute(`PRAGMA user_version = ${schema.version};`);
+                }
             }
         } catch (error) {
             console.error('Error performing migrations:', error);
@@ -97,12 +100,21 @@ export class Database {
         }
     }
 
+    /**
+     * @param {import('database').StructureDefinition<TObjectStoreName>} schema
+     * @returns {Promise<void>}
+     */
     async _applySchemaChanges(schema) {
         for (const [tableName, tableSchema] of Object.entries(schema.stores)) {
             await this._createOrUpdateTable(tableName, tableSchema);
         }
     }
 
+    /**
+     * @param {string} tableName
+     * @param {import('database').StoreDefinition} tableSchema
+     * @returns {Promise<void>}
+     */
     async _createOrUpdateTable(tableName, tableSchema) {
         const tableExists = await this._tableExists(tableName);
 
@@ -114,6 +126,10 @@ export class Database {
         await this._createIndices(tableName, tableSchema);
     }
 
+    /**
+     * @param {string} tableName
+     * @returns {Promise<boolean>}
+     */
     async _tableExists(tableName) {
         const result = await this._db.execute(
             `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`,
@@ -123,6 +139,11 @@ export class Database {
         return Array.isArray(result.rows) && result.rows.length !== 0;
     }
 
+    /**
+     * @param {string} tableName
+     * @param {import('database').StoreDefinition} tableSchema
+     * @returns {Promise<void>}
+     */
     async _createTable(tableName, tableSchema) {
         const createTableStmt = `
         CREATE TABLE IF NOT EXISTS ${tableName} (
@@ -132,6 +153,11 @@ export class Database {
         await this._db.execute(createTableStmt);
     }
 
+    /**
+     * @param {string} tableName
+     * @param {import('database').StoreDefinition} tableSchema
+     * @returns {Promise<void>}
+     */
     async _createIndices(tableName, tableSchema) {
         for (const indexName of tableSchema.indices) {
             const createIndexStmt = `
@@ -198,21 +224,86 @@ export class Database {
         }
 
         try {
-            const sql = `SELECT id, json_extract(data, '$') as data FROM ${tableName}`;
+            const sql = `SELECT id, json(data) as data FROM ${tableName};`;
             const { rows } = await this._db.execute(sql);
-            console.log('database.js: Getting all entries from db');
-            // console.log(rows);
 
             return rows.map((row) => ({
               ...JSON.parse(row.data),
               id: row.id,
             }));
         } catch (error) {
-            throw new Error(
-              `Error getting all entries from table '${tableName}': ${error.message}`,
-            );
+            console.error(`Error getting all entries from table '${tableName}':`, error);
+            throw error;
         }
     }
+
+    /**
+    * @template [TRow=unknown]
+    * @template [TItem=unknown]
+    * @template [TResult=unknown]
+    * @param {string} tableName
+    * @param {string[]} indexColumns
+    * @param {TItem[]} items
+    * @param {(item: TItem) => string} createQuery
+    * @param {(row: TRow, item: TItem) => boolean} predicate
+    * @param {(row: TRow, data: {item: TItem, itemIndex: number, indexIndex: number}) => TResult} createResult
+    * @returns {Promise<TResult[]>}
+    */
+    // async findMultiBulk(tableName, indexColumns, items, createQuery, predicate, createResult) {
+    //     const itemCount = items.length;
+    //     const indexCount = indexColumns.length;
+    //     /** @type {TResult[]} */
+    //     const results = [];
+    //     if (itemCount === 0 || indexCount === 0) {
+    //         return results;
+    //     }
+    //
+    //     let completeCount = 0;
+    //     const requiredCompleteCount = itemCount * indexCount;
+    //
+    //     const startTime = performance.now();
+    //
+    //     for (let i = 0; i < itemCount; ++i) {
+    //         const item = items[i];
+    //         const query = createQuery(item);
+    //
+    //         for (let j = 0; j < indexCount; ++j) {
+    //           const indexName = indexColumns[j];
+    //           const data = { item, itemIndex: i, indexIndex: j };
+    //
+    //           const sql = `SELECT id, json(data) as value
+    //                        FROM ${tableName}
+    //                        WHERE json_extract(data, '$.${indexName}') = ?`;
+    //
+    //           try {
+    //               // console.log(`query: ${query}`);
+    //               const { rows } = await this._db.execute(sql, [query]);
+    //
+    //               for (const row of rows) {
+    //                   // console.log(`value: ${row.value}`);
+    //                   const parsedRow = { ...JSON.parse(row.value), id: row.id };
+    //                   try {
+    //                       if (predicate(parsedRow, data.item)) {
+    //                         results.push(createResult(parsedRow, data));
+    //                       }
+    //                   } catch (e) {
+    //                       console.error(e);
+    //                       throw e;
+    //                   }
+    //               }
+    //
+    //               if (++completeCount >= requiredCompleteCount) {
+    //                   console.log(`Completed in ${(performance.now() - startTime).toFixed(2)}ms`);
+    //                   return results;
+    //               }
+    //           } catch (error) {
+    //               throw error;
+    //           }
+    //         }
+    //     }
+    //
+    //     return results;
+    // }
 
     /**
     * @template [TRow=unknown]
@@ -229,52 +320,49 @@ export class Database {
     async findMultiBulk(tableName, indexColumns, items, createQuery, predicate, createResult) {
         const itemCount = items.length;
         const indexCount = indexColumns.length;
+        /** @type {TResult[]} */
         const results = [];
 
         if (itemCount === 0 || indexCount === 0) {
             return results;
         }
 
-        let completeCount = 0;
-        const requiredCompleteCount = itemCount * indexCount;
+        // const requiredCompleteCount = itemCount * indexCount;
+        // let completeCount = 0;
+        // const startTime = performance.now();
 
-        for (let i = 0; i < itemCount; ++i) {
-            const item = items[i];
-            const query = createQuery(item);
+        try {
+            await Promise.all(items.map(async (item, itemIndex) => {
+                const query = createQuery(item);
 
-            for (let j = 0; j < indexCount; ++j) {
-              const indexName = indexColumns[j];
-              const data = { item, itemIndex: i, indexIndex: j };
+                await Promise.all(indexColumns.map(async (indexName, indexIndex) => {
+                    const data = { item, itemIndex, indexIndex };
+                    const sql = `SELECT id, json(data) as value
+                                 FROM ${tableName}
+                                 WHERE json_extract(data, '$.${indexName}') = ?`;
 
-              const sql = `SELECT id, json_extract(data, '$') as value
-                           FROM ${tableName}
-                           WHERE json_extract(data, '$.${indexName}') = ?`;
-              const params = [query];
+                    try {
+                        const { rows } = await this._db.execute(sql, [query]);
 
-              try {
-                  const { rows } = await this._db.execute(sql, params);
-                  // console.log('Getting rows:');
-                  // console.log(rows);
+                        for (const row of rows) {
+                            const parsedRow = { ...JSON.parse(row.value), id: row.id };
+                            if (predicate(parsedRow, item)) {
+                                results.push(createResult(parsedRow, data));
+                            }
+                        }
+                    } catch (error) {
+                        console.error(`Error processing item ${itemIndex} with index ${indexName}:`, error);
+                        throw error;
+                    }
 
-                  for (const row of rows) {
-                      const parsedRow = { ...JSON.parse(row.value), id: row.id };
-                      try {
-                          if (predicate(parsedRow, data.item)) {
-                            results.push(createResult(parsedRow, data));
-                          }
-                      } catch (e) {
-                          console.log(e);
-                          throw e;
-                      }
-                  }
-
-                  if (++completeCount >= requiredCompleteCount) {
-                      return results;
-                  }
-              } catch (error) {
-                  throw error;
-              }
-            }
+                    // if (++completeCount >= requiredCompleteCount) {
+                    //     console.log(`Completed in ${(performance.now() - startTime).toFixed(2)}ms`);
+                    // }
+                }));
+            }));
+        } catch (error) {
+            console.error('Error in findMultiBulk:', error);
+            throw error;
         }
 
         return results;
@@ -298,7 +386,7 @@ export class Database {
         const placeholders = items.map(() => '?').join(',');
         const sql = `SELECT
                       json_extract(data, '$.${indexColumns}') as ${indexColumns},
-                      json_extract(data, '$') as data,
+                      json(data) as data,
                       id
                      FROM ${tableName}
                      WHERE json_extract(data, '$.${indexColumns}') IN (${placeholders})`;
@@ -326,51 +414,6 @@ export class Database {
     }
 
     /**
-    * @param {string[]} dictionaryNames
-    * @param {boolean} getTotal
-    * @returns {Promise<import('dictionary-database').DictionaryCounts>}
-    */
-    async getDictionaryCounts(dictionaryNames, getTotal) {
-        // TODO: Check if this is working
-        const targets = [
-            'kanji',
-            'kanjiMeta',
-            'terms',
-            'termMeta',
-            'tagMeta',
-            'media',
-        ];
-
-        /** @type {import('dictionary-database').DictionaryCountGroup[]} */
-        const counts = [];
-        let total = null;
-
-        if (getTotal) {
-            total = {};
-            for (const target of targets) {
-                const sql = `SELECT COUNT(*) as count FROM ${target}`;
-                const { rows } = await this._db.execute(sql);
-                // TODO: Implement
-                throw new Error('Error getting total', rows);
-                // total[target] = result.count;
-              }
-        }
-
-        for (const dictionaryName of dictionaryNames) {
-            /** @type {import('dictionary-database').DictionaryCountGroup} */
-            const countGroup = {};
-            for (const target of targets) {
-                const sql = `SELECT COUNT(*) as count FROM ${target} WHERE dictionary = ?`;
-                const result = await this._db.execute(sql, [dictionaryName]);
-                countGroup[target] = result.count;
-            }
-            counts.push(countGroup);
-        }
-
-        return { total, counts };
-    }
-
-    /**
     * @param {TObjectStoreName} objectStoreName
     * @param {unknown[]} items List of items to add.
     * @param {number} start Start index. Added items begin at _items_[_start_].
@@ -378,21 +421,23 @@ export class Database {
     * @returns {Promise<void>}
     */
     async bulkAdd(objectStoreName, items, start, count) {
-        if (this._db === null) {
-            throw new Error('Database not open');
+        if (this._db === null) throw new Error('Database not open');
+
+        if (start + count > items.length) {
+            count = items.length - start;
         }
 
-        if (!Array.isArray(items) || items.length === 0) {
-            throw new Error('Items must be a non-empty array');
+        if (count <= 0) {
+            return;
         }
 
         const end = Math.min(start + count, items.length);
         const batch = items.slice(start, end);
-        const placeholders = batch.map(() => '(?)').join(',');
+        const placeholders = batch.map(() => '(jsonb(?))').join(',');
         const query = `INSERT INTO ${objectStoreName} (data) VALUES ${placeholders}`;
-
         const values = batch.map((item) => JSON.stringify(item));
-        await this._db.execute(query, values);
+
+        await this._db.executeRaw(query, values);
     }
 
     /**
@@ -512,23 +557,32 @@ export class Database {
     }
 
     /**
-    * @param {import('database').CountTarget[]} targets
-    * @param {(results: number[]) => void} resolve
-    * @param {(reason?: unknown) => void} reject
+    * @param {{table: string, column: string, query: string|null}[]} operations 
+    * @returns {Promise<number[]>} Array of counts in same order as operations
     */
-    async bulkCount(targets, resolve, reject) {
-      try {
-        const results = await Promise.all(
-          targets.map(([objectStoreOrIndex, query]) => {
-            let collection = this._applyQuery(objectStoreOrIndex, query);
-            return collection.count();
-          }),
-        );
-        resolve(results);
-      } catch (error) {
-        reject(error);
-      }
+    async bulkCount(operations) {
+        /** @type {number[]} */
+        const results = new Array(operations.length);
+
+        try {
+            await Promise.all(operations.map(async (op, index) => {
+                const sql = op.query
+                    ? `SELECT COUNT(*) as count FROM ${op.table} WHERE data->>'${op.column}' = ?`
+                    : `SELECT COUNT(*) as count FROM ${op.table}`;
+
+                const params = op.query ? [op.query] : [];
+
+                const {rows} = await this._db.execute(sql, params);
+                results[index] = rows[0].count;
+            }));
+
+            return results;
+        } catch (error) {
+            console.error('Bulk count failed:', error);
+            throw error;
+        }
     }
+
 
     /**
     * Deletes records in store with the given key or in the given key range in query.
@@ -543,38 +597,58 @@ export class Database {
       await this._db.table(objectStoreName).where(':id').equals(key).delete();
     }
 
-    /**
-    * Delete items in bulk from the object store.
-    * @param {TObjectStoreName} objectStoreName
-    * @param {?string} indexName
-    * @param {string} query
-    * @param {?(keys: IDBValidKey[]) => IDBValidKey[]} filterKeys
-    * @param {?(completedCount: number, totalCount: number) => void} onProgress
-    * @returns {Promise<void>}
-    */
-    async bulkDelete(objectStoreName, indexName, query, filterKeys = null, onProgress = null) {
-      console.log('Bulk deleting');
-      if (this._db === null) {
-        throw new Error('Database not open');
+      /**
+      * Delete items in bulk from the table.
+      * @param {string} tableName
+      * @param {?string} indexName
+      * @param {string} query
+      * @param {?(keys: string[]) => string[]} filterKeys
+      * @param {?(completedCount: number, totalCount: number) => void} onProgress
+      * @returns {Promise<void>}
+      */
+      async bulkDelete(tableName, indexName, query, filterKeys = null, onProgress = null) {
+          if (this._db === null) throw new Error('Database not open');
+
+          // Get total count for progress reporting
+          const countResult = await this._db.execute(
+              `SELECT COUNT(*) as count FROM ${tableName} WHERE data->>'${indexName}' = ?`,
+              [query]
+          );
+
+          const totalCount = countResult.rows[0].count;
+
+          if (totalCount === 0) {
+              if (onProgress) onProgress(0, 0);
+              return;
+          }
+
+          if (typeof filterKeys === 'function') {
+              // Get all keys matching the query
+              const keysResult = await this._db.execute(
+                  `SELECT id FROM ${tableName} WHERE data->>'${indexName}' = ?`,
+                  [query]
+              );
+              const keys = keysResult.rows.map(row => row.id);
+              const filteredKeys = filterKeys(keys);
+
+              if (filteredKeys.length === 0) {
+                  if (onProgress) onProgress(0, totalCount);
+                  return;
+              }
+
+              await this._db.executeRaw(`DELETE FROM ${tableName} WHERE id IN (${filteredKeys.join(',')})`);
+              // Run VACUUM to reclaim space
+              await this._db.executeRaw('VACUUM');
+
+              if (onProgress) onProgress(filteredKeys.length, totalCount);
+              return;
+          }
+
+          // Simple case - no key filtering needed
+          await this._db.executeRaw(`DELETE FROM ${tableName} WHERE data->>'${indexName}' = ?`, [query]);
+
+          if (onProgress) onProgress(totalCount, totalCount);
       }
-
-      let collection = this._db.table(objectStoreName);
-      if (indexName) {
-        collection = collection.orderBy(indexName);
-      }
-      collection = this._applyQuery(collection, query);
-
-      const keys = await collection.primaryKeys();
-      const filteredKeys = filterKeys ? filterKeys(keys) : keys;
-
-      await this._bulkDeleteInternal(
-        collection,
-        filteredKeys,
-        1000,
-        0,
-        onProgress,
-      );
-    }
 
     /**
      * Attempts to delete the named database.
@@ -583,19 +657,26 @@ export class Database {
     * @param {string} databaseName
     * @returns {Promise<void>}
     */
-    static async deleteDatabase(databaseName) {
-      try {
-        await FileSystem.deleteAsync(
-          `${FileSystem.documentDirectory}/SQLite/${databaseName}`,
-          { idempotent: true },
-        );
-      } catch (error) {
-        // TODO: Check if this is working
-        if (error.name === 'BlockedError') {
-          throw new Error('Database deletion blocked');
+    async deleteDatabase(databaseName) {
+        try {
+            if (this._db === null) throw new Error('Database is null');
+            throw new Error('Not implemented');
+            // this._db.executeRaw('PRAGMA writable_schema = 1;');
+            // this._db.executeRaw(`DELETE FROM sqlite_master WHERE type='table' AND name='${databaseName}';`);
+            // this._db.executeRaw(`DELETE FROM sqlite_master;`);
+            // this._db.executeRaw('PRAGMA writable_schema = 0;');
+            // this._db.executeRaw('VACUUM;');
+            // this._db.executeRaw('PRAGMA integrity_check;');
+            // this._db.delete()
+            // console.log(`Deleting database: ${FileSystem.documentDirectory}`);
+            // const DICT_DATABASE_PATH = `${Platform.OS === 'ios' ? IOS_LIBRARY_PATH : "file://" + ANDROID_DATABASE_PATH}`;
+            // console.log(`Deleting database: ${DICT_DATABASE_PATH}${databaseName}`);
+            // await FileSystem.deleteAsync(`${DICT_DATABASE_PATH}${databaseName}`, {idempotent: true});
+            // this.close()
+        } catch (error) {
+            console.error("Error deleting database:", error);
+            throw error;
         }
-        throw error;
-      }
     }
 
     // Private methods
@@ -660,34 +741,76 @@ export class Database {
       return collection;
     }
 
-    /**
-    * @param {Dexie.Table|Dexie.Collection} collection
-    * @param {IDBValidKey[]} keys
-    * @param {number} maxActiveRequests
-    * @param {number} maxActiveRequestsForContinue
-    * @param {?(completedCount: number, totalCount: number) => void} onProgress
-    * @returns {Promise<void>}
-    */
-    async _bulkDeleteInternal(
-      collection,
-      keys,
-      maxActiveRequests,
-      maxActiveRequestsForContinue,
-      onProgress,
-    ) {
-      const totalCount = keys.length;
-      let completedCount = 0;
-
-      const chunkSize = Math.min(maxActiveRequests, 1000);
-      for (let i = 0; i < keys.length; i += chunkSize) {
-        const chunk = keys.slice(i, i + chunkSize);
-        await collection.where(':id').anyOf(chunk).delete();
-        completedCount += chunk.length;
-        if (onProgress) {
-          onProgress(completedCount, totalCount);
-        }
-      }
-    }
+    // /**
+    //  * @param {IDBObjectStore} objectStore The object store from which items are being deleted.
+    //  * @param {IDBValidKey[]} keys An array of keys to delete from the object store.
+    //  * @param {number} maxActiveRequests The maximum number of concurrent requests.
+    //  * @param {number} maxActiveRequestsForContinue The maximum number of requests that can be active before the next set of requests is started.
+    //  *   For example:
+    //  *   - If this value is `0`, all of the `maxActiveRequests` requests must complete before another group of `maxActiveRequests` is started off.
+    //  *   - If the value is greater than or equal to `maxActiveRequests-1`, every time a single request completes, a new single request will be started.
+    //  * @param {?(completedCount: number, totalCount: number) => void} onProgress An optional progress callback function.
+    //  * @param {(error: ?Error) => void} onComplete A function which is called after all operations have finished.
+    //  *   If an error occured, the `error` parameter will be non-`null`. Otherwise, it will be `null`.
+    //  * @throws {Error} An error is thrown if the input parameters are invalid.
+    //  */
+    // async _bulkDeleteInternal(objectStore, keys, maxActiveRequests, maxActiveRequestsForContinue, onProgress, onComplete) {
+    //     if (maxActiveRequests <= 0) { throw new Error(`maxActiveRequests has an invalid value: ${maxActiveRequests}`); }
+    //     if (maxActiveRequestsForContinue < 0) { throw new Error(`maxActiveRequestsForContinue has an invalid value: ${maxActiveRequestsForContinue}`); }
+    //
+    //     const count = keys.length;
+    //     if (count === 0) {
+    //         onComplete(null);
+    //         return;
+    //     }
+    //
+    //     let completedCount = 0;
+    //     let completed = false;
+    //     let index = 0;
+    //     let active = 0;
+    //
+    //     const onSuccess = () => {
+    //         if (completed) { return; }
+    //         --active;
+    //         ++completedCount;
+    //         if (onProgress !== null) {
+    //             try {
+    //                 onProgress(completedCount, count);
+    //             } catch (e) {
+    //                 // NOP
+    //             }
+    //         }
+    //         if (completedCount >= count) {
+    //             completed = true;
+    //             onComplete(null);
+    //         } else if (active <= maxActiveRequestsForContinue) {
+    //             next();
+    //         }
+    //     };
+    //
+    //     /**
+    //      * @param {Event} event
+    //      */
+    //     const onError = (event) => {
+    //         if (completed) { return; }
+    //         completed = true;
+    //         const request = /** @type {IDBRequest<undefined>} */ (event.target);
+    //         const {error} = request;
+    //         onComplete(error);
+    //     };
+    //
+    //     const next = () => {
+    //         for (; index < count && active < maxActiveRequests; ++index) {
+    //             const key = keys[index];
+    //             const request = objectStore.delete(key);
+    //             request.onsuccess = onSuccess;
+    //             request.onerror = onError;
+    //             ++active;
+    //         }
+    //     };
+    //
+    //     next();
+    // }
 
     // /**
     //  * @param {string[]} storeNames

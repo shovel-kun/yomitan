@@ -1194,7 +1194,19 @@ export class DictionaryController {
 
             const token = this._databaseStateToken;
             const dictionaryTitles = this._dictionaryEntries.map(({dictionaryTitle}) => dictionaryTitle);
-            const {counts, total} = await new DictionaryWorker().getDictionaryCounts(dictionaryTitles, true);
+
+            /** @returns {Promise<import('dictionary-database').DictionaryCounts>} */
+            async function nativeGetDictionaryCounts() {
+                const params = {dictionaryTitles, getTotal: true};
+                return await new Promise((resolve, reject) => {
+                    chrome.runtime.sendMessage({ action: 'nativeGetDictionaryCounts', params }, (response) => {
+                        resolve(response);
+                    })
+                });
+            }
+
+            const {counts, total} = await nativeGetDictionaryCounts();
+
             if (this._databaseStateToken !== token) { return; }
 
             for (let i = 0, ii = Math.min(counts.length, this._dictionaryEntries.length); i < ii; ++i) {
@@ -1411,7 +1423,7 @@ export class DictionaryController {
             if (details.complete) { return; }
             const {action, params} = details;
             if (action === 'progress') {
-                onProgress(...params);
+                onProgress(params);
             }
         }
 
@@ -1419,7 +1431,6 @@ export class DictionaryController {
         await nativeDeleteDictionary();
         chrome.runtime.onMessage.removeListener(_onMessage);
 
-        // await new DictionaryWorker().deleteDictionary(dictionaryTitle, onProgress);
         /** @type {import('core').DeferredPromiseDetails<void>} */
         const {promise: dictionariesUpdatePromise, resolve} = deferPromise();
         this._onDictionariesUpdate = resolve;

@@ -61,11 +61,11 @@ export class DictionaryImporter {
 
     /**
      * @param {import('./dictionary-database.js').DictionaryDatabase} dictionaryDatabase
-     * @param {string} archiveContent - Base64 encoded string
+     * @param {string} archiveUri
      * @param {import('dictionary-importer').ImportDetails} details
      * @returns {Promise<import('dictionary-importer').ImportResult>}
      */
-    async importDictionary(dictionaryDatabase, archiveContent, details) {
+    async importDictionary(dictionaryDatabase, archiveUri, details) {
         if (!dictionaryDatabase) {
             throw new Error('Invalid database');
         }
@@ -78,7 +78,7 @@ export class DictionaryImporter {
 
         try {
         // Read archive
-        const fileMap = await this._getFilesFromArchive(archiveContent);
+        const fileMap = await this._getFilesFromArchive(archiveUri);
         const index = await this._readAndValidateIndex(fileMap);
 
         const dictionaryTitle = index.title;

@@ -2096,7 +2096,9 @@ export class Backend {
      */
     _sendMessageTabIgnoreResponse(tabId, message, options) {
         const callback = () => this._checkLastError(chrome.runtime.lastError);
-        chrome.tabs.sendMessage(tabId, message, options, callback);
+        // NOTE: There are no tabs in EbiReader, so just use chrom.runtime.sendMessage
+        chrome.runtime.sendMessage(message, callback);
+        // chrome.tabs.sendMessage(tabId, message, options, callback);
     }
 
     /**
@@ -2104,8 +2106,9 @@ export class Backend {
      */
     _sendMessageAllTabsIgnoreResponse(message) {
         const callback = () => this._checkLastError(chrome.runtime.lastError);
-        // TODO: Make this work.
-        // But Yomitan seems to work fine without it.
+        // NOTE: There are no tabs in EbiReader, so just use chrom.runtime.sendMessage
+        // TODO: Implement tabs in chrome mock.
+        chrome.runtime.sendMessage(message, callback);
         // chrome.tabs.query({}, (tabs) => {
         //     for (const tab of tabs) {
         //         const {id} = tab;
