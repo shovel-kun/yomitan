@@ -114,18 +114,23 @@ export class DictionaryImporter {
         console.log('Loading data');
         const totalStart = performance.now();
         this._progressNextStep(termFiles.length + termMetaFiles.length + kanjiFiles.length + kanjiMetaFiles.length + tagFiles.length);
+        console.log('Converting term bank');
         const termList = await (
             version === 1 ?
             this._readFileSequence(termFiles, this._convertTermBankEntryV1.bind(this), dataBankSchemas[0], dictionaryTitle) :
             this._readFileSequence(termFiles, this._convertTermBankEntryV3.bind(this), dataBankSchemas[0], dictionaryTitle)
         );
+        console.log('Converting term meta bank');
         const termMetaList = await this._readFileSequence(termMetaFiles, this._convertTermMetaBankEntry.bind(this), dataBankSchemas[1], dictionaryTitle);
+        console.log('Converting kanji bank');
         const kanjiList = await (
             version === 1 ?
             this._readFileSequence(kanjiFiles, this._convertKanjiBankEntryV1.bind(this), dataBankSchemas[2], dictionaryTitle) :
             this._readFileSequence(kanjiFiles, this._convertKanjiBankEntryV3.bind(this), dataBankSchemas[2], dictionaryTitle)
         );
+        console.log('Converting kanji meta bank');
         const kanjiMetaList = await this._readFileSequence(kanjiMetaFiles, this._convertKanjiMetaBankEntry.bind(this), dataBankSchemas[3], dictionaryTitle);
+        console.log('Converting tag bank');
         const tagList = await this._readFileSequence(tagFiles, this._convertTagBankEntry.bind(this), dataBankSchemas[4], dictionaryTitle);
         this._addOldIndexTags(index, tagList, dictionaryTitle);
         console.log(`Loaded data in ${(performance.now() - totalStart).toFixed(2)}ms`);
