@@ -56,9 +56,9 @@ export class Database {
             }
 
             // Safety level may not be changed inside a transaction
-            // await this._db.execute('PRAGMA journal_mode = WAL;');
-            // await this._db.execute('PRAGMA synchronous = normal;');
-            // await this._db.execute('PRAGMA journal_size_limit = 6144000;');
+            await this._db.execute('PRAGMA journal_mode = WAL;');
+            await this._db.execute('PRAGMA synchronous = normal;');
+            await this._db.execute('PRAGMA journal_size_limit = 6144000;');
 
             const {rows} = await this._db.execute('PRAGMA user_version');
             const currentVersion = rows[0].user_version;
