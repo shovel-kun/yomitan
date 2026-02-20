@@ -24,9 +24,6 @@ import {JsonSchema} from '../data/json-schema.js';
 import {NativeSimpleDOMParser} from '../dom/native-simple-dom-parser.js';
 import {SimpleDOMParser} from '../dom/simple-dom-parser.js';
 import {isStringEntirelyKana} from '../language/ja/japanese.js';
-import '@formatjs/intl-locale/polyfill';
-import '@formatjs/intl-displaynames/polyfill';
-import '@formatjs/intl-displaynames/locale-data/en.js';
 
 /** @type {RequestInit} */
 const DEFAULT_REQUEST_INIT_PARAMS = {

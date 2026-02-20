@@ -32,6 +32,7 @@ import {arrayBufferToBase64} from '../data/array-buffer-util.js';
 import {OptionsUtil} from '../data/options-util.js';
 import {getAllPermissions, hasPermissions, hasRequiredPermissionsForOptions} from '../data/permissions-util.js';
 import {DictionaryDatabase} from '../dictionary/dictionary-database.js';
+import {DictionaryWorker} from '../dictionary/dictionary-worker.js';
 import {Environment} from '../extension/environment.js';
 import {ObjectPropertyAccessor} from '../general/object-property-accessor.js';
 import {distributeFuriganaInflected, isCodePointJapanese, convertKatakanaToHiragana as jpConvertKatakanaToHiragana} from '../language/ja/japanese.js';
@@ -170,6 +171,10 @@ export class Backend {
             ['getDictionaryInfo',            this._onApiGetDictionaryInfo.bind(this)],
             ['purgeDatabase',                this._onApiPurgeDatabase.bind(this)],
             ['getMedia',                     this._onApiGetMedia.bind(this)],
+            // WebView-native bridge (KMP port)
+            ['nativeImportDictionary',       this._onApiNativeImportDictionary.bind(this)],
+            ['nativeDeleteDictionary',       this._onApiNativeDeleteDictionary.bind(this)],
+            ['nativeGetDictionaryCounts',    this._onApiNativeGetDictionaryCounts.bind(this)],
             ['logGenericErrorBackend',       this._onApiLogGenericErrorBackend.bind(this)],
             ['logIndicatorClear',            this._onApiLogIndicatorClear.bind(this)],
             ['modifySettings',               this._onApiModifySettings.bind(this)],
@@ -210,13 +215,16 @@ export class Backend {
      */
     prepare() {
         if (this._preparePromise === null) {
+            console.log('Preparing internal');
             const promise = this._prepareInternal();
             promise.then(
                 () => {
+                    console.log('Prepared internal successfully');
                     this._isPrepared = true;
                     this._prepareCompleteResolve();
                 },
                 (error) => {
+                    console.log('Prepared internal failed');
                     this._prepareError = true;
                     this._prepareCompleteReject(error);
                 },
@@ -244,6 +252,7 @@ export class Backend {
         }
 
         const onMessage = this._onMessageWrapper.bind(this);
+        console.log('Adding listener for onMessage');
         chrome.runtime.onMessage.addListener(onMessage);
 
         // On Chrome, this is for receiving messages sent with navigator.serviceWorker, which has the benefit of being able to transfer objects, but doesn't accept callbacks
@@ -312,7 +321,9 @@ export class Backend {
             // Above commented out because we will always use Chrome
 
             try {
+                console.log('Preparing dictionary database');
                 await this._dictionaryDatabase.prepare();
+                console.log('Dictionary database prepared');
             } catch (e) {
                 log.error(e);
             }
@@ -320,24 +331,33 @@ export class Backend {
             void this._translator.prepare();
 
             await this._optionsUtil.prepare();
+            console.log('Options prepared');
             this._defaultAnkiFieldTemplates = (await fetchText('/data/templates/default-anki-field-templates.handlebars')).trim();
+            console.log('Default Anki field templates prepared');
             this._options = await this._optionsUtil.load();
+            console.log('_options loaded');
 
+            console.log('Applying options');
             this._applyOptions('background');
+            console.log('Options applied');
 
             // TODO: 'The omnibox API allows you to register a keyword with Google Chrome's address bar, which is also known as the omnibox'
             // So basically we don't need this.
             // this._attachOmniboxListener();
 
+            console.log('Loading options');
             const options = this._getProfileOptions({current: true}, false);
+            console.log('Options loaded');
             if (options.general.showGuide) {
-                void this._openWelcomeGuidePageOnce();
+                // void this._openWelcomeGuidePageOnce();
             }
 
             this._clipboardMonitor.on('change', this._onClipboardTextChange.bind(this));
 
+            console.log('Sending applicationBackendReady');
             this._sendMessageAllTabsIgnoreResponse({action: 'applicationBackendReady'});
             this._sendMessageIgnoreResponse({action: 'applicationBackendReady'});
+            console.log('applicationBackendReady sent');
         } catch (e) {
             log.error(e);
             throw e;
@@ -420,13 +440,22 @@ export class Backend {
 
     /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('api').ApiMessageAny>} */
     _onMessageWrapper(message, sender, sendResponse) {
+        console.log('On message wrapper', JSON.stringify(message));
+
         if (this._isPrepared) {
+            console.log('Calling onMessage');
             return this._onMessage(message, sender, sendResponse);
         }
 
         this._prepareCompletePromise.then(
-            () => { this._onMessage(message, sender, sendResponse); },
-            () => { sendResponse(); },
+            () => {
+                console.log('Calling onMessage in a promise');
+                this._onMessage(message, sender, sendResponse);
+            },
+            () => {
+                console.log('Sending response');
+                sendResponse();
+            },
         );
         return true;
     }
@@ -447,6 +476,7 @@ export class Backend {
      * @returns {boolean}
      */
     _onMessage({action, params}, sender, callback) {
+        console.log('Invoking handler for', action);
         return invokeApiMapHandler(this._apiMap, action, params, [sender], callback);
     }
 
@@ -894,6 +924,37 @@ export class Backend {
     /** @type {import('api').ApiHandler<'getMedia'>} */
     async _onApiGetMedia({targets}) {
         return await this._getNormalizedDictionaryDatabaseMedia(targets);
+    }
+
+    /**
+     * WebView-native bridge: import a dictionary archive from a local file URI/path.
+     * Emits progress via `chrome.runtime.sendMessage({action:'progress', ...})`.
+     * @param {{uri: string, importDetails: import('dictionary-importer').ImportDetails}} params
+     * @returns {Promise<import('dictionary-worker').MessageCompleteResultSerialized>}
+     */
+    async _onApiNativeImportDictionary({uri, importDetails}) {
+        const worker = new DictionaryWorker();
+        return await worker.importDictionary(uri, importDetails, null);
+    }
+
+    /**
+     * WebView-native bridge: delete a dictionary by title.
+     * @param {{dictionaryTitle: string}} params
+     * @returns {Promise<void>}
+     */
+    async _onApiNativeDeleteDictionary({dictionaryTitle}) {
+        const worker = new DictionaryWorker();
+        await worker.deleteDictionary(dictionaryTitle, null);
+    }
+
+    /**
+     * WebView-native bridge: get per-dictionary counts.
+     * @param {{dictionaryTitles: string[], getTotal: boolean}} params
+     * @returns {Promise<import('dictionary-database').DictionaryCounts>}
+     */
+    async _onApiNativeGetDictionaryCounts({dictionaryTitles, getTotal}) {
+        const worker = new DictionaryWorker();
+        return await worker.getDictionaryCounts(dictionaryTitles, getTotal);
     }
 
     /** @type {import('api').ApiHandler<'logGenericErrorBackend'>} */
@@ -1421,7 +1482,7 @@ export class Backend {
 
         void this._accessibilityController.update(this._getOptionsFull(false));
 
-        this._sendMessageAllTabsIgnoreResponse({action: 'applicationOptionsUpdated', params: {source}});
+        // this._sendMessageAllTabsIgnoreResponse({action: 'applicationOptionsUpdated', params: {source}});
     }
 
     /**

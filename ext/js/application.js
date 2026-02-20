@@ -60,23 +60,14 @@ async function waitForBackendReady(webExtension) {
     /** @type {import('application').ApiMap} */
     const apiMap = createApiMap([['applicationBackendReady', () => { resolve(); }]]);
     /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
-    // const onMessage = ({action, params}, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
-    // NOTE: We are using our own callback to send a response back to the React Native sender
-    const onMessage = ({ action, params }, _sender, callback) => {
-      const result = invokeApiMapHandler(apiMap, action, params, [], callback);
-      if (params && params.messageId !== undefined) {
-        console.log("Sending response back to the sender", { action, params });
-        callback({ messageId: params.messageId });
-      }
-      return result;
-    };
+    const onMessage = ({action, params}, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
     chrome.runtime.onMessage.addListener(onMessage);
     try {
         console.log('waitForBackendReady: sending requestBackendReadySignal');
         await webExtension.sendMessagePromise({action: 'requestBackendReadySignal'});
-        console.log('waitForBackendReady: waiting for requestBackendReadySignal');
+        console.log('waitForBackendReady: waiting for applicationBackendReady');
         await promise;
-        console.log('waitForBackendReady: requestBackendReadySignal received');
+        console.log('waitForBackendReady: applicationBackendReady received');
     } finally {
         console.log('waitForBackendReady: removing listener');
         chrome.runtime.onMessage.removeListener(onMessage);
@@ -205,7 +196,10 @@ export class Application extends EventDispatcher {
      */
     static async main(waitForDom, mainFunction) {
         const supportsServiceWorker = 'serviceWorker' in navigator; // Basically, all browsers except Firefox. But it's possible Firefox will support it in the future, so we check in this fashion to be future-proof.
-        const inExtensionContext = window.location.protocol === new URL(import.meta.url).protocol; // This code runs both in content script as well as in the iframe, so we need to differentiate the situation
+        // This code runs both in content script as well as in the iframe, so we need to
+        // differentiate the situation. Use chrome.runtime.getURL so this also works when the
+        // code is bundled for non-module execution (e.g. injected into a WebView).
+        const inExtensionContext = window.location.protocol === new URL(chrome.runtime.getURL('/')).protocol;
         /** @type {MessagePort | null} */
         // If this is Firefox, we don't have a service worker and can't postMessage,
         // so we temporarily create a SharedWorker in order to establish a MessageChannel
@@ -214,7 +208,7 @@ export class Application extends EventDispatcher {
         // not in the content script context.
         const backendPort = !supportsServiceWorker && inExtensionContext ?
             (() => {
-                const sharedWorkerBridge = new SharedWorker(new URL('comm/shared-worker-bridge.js', import.meta.url), {type: 'module'});
+                const sharedWorkerBridge = new SharedWorker(chrome.runtime.getURL('comm/shared-worker-bridge.js'), {type: 'module'});
                 const backendChannel = new MessageChannel();
                 sharedWorkerBridge.port.postMessage({action: 'connectToBackend1'}, [backendChannel.port1]);
                 sharedWorkerBridge.port.close();
@@ -227,7 +221,7 @@ export class Application extends EventDispatcher {
         log.configure(webExtension.extensionName);
 
         const mediaDrawingWorkerToBackendChannel = new MessageChannel();
-        const mediaDrawingWorker = inExtensionContext ? new Worker(new URL('display/media-drawing-worker.js', import.meta.url), {type: 'module'}) : null;
+        const mediaDrawingWorker = inExtensionContext ? new Worker(chrome.runtime.getURL('display/media-drawing-worker.js'), {type: 'module'}) : null;
         mediaDrawingWorker?.postMessage({action: 'connectToDatabaseWorker'}, [mediaDrawingWorkerToBackendChannel.port2]);
 
         console.log('Creating API');
@@ -240,9 +234,7 @@ export class Application extends EventDispatcher {
             void api.heartbeat();
         }, 20 * 1000);
 
-        // NOTE: We don't have frame information
-        // const {tabId, frameId} = await api.frameInformationGet();
-        const { tabId, frameId } = { tabId: 0, frameId: 0 };
+        const {tabId, frameId} = await api.frameInformationGet();
         console.log('Creating CrossFrameAPI')
         const crossFrameApi = new CrossFrameAPI(api, tabId, frameId);
         crossFrameApi.prepare();

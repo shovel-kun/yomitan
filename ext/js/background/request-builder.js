@@ -186,14 +186,15 @@ export class RequestBuilder {
      */
     _getSessionRules() {
         return new Promise((resolve, reject) => {
-            chrome.declarativeNetRequest.getSessionRules((result) => {
-                const e = chrome.runtime.lastError;
-                if (e) {
-                    reject(new Error(e.message));
-                } else {
-                    resolve(result);
-                }
-            });
+            // chrome.declarativeNetRequest.getSessionRules((result) => {
+            //     const e = chrome.runtime.lastError;
+            //     if (e) {
+            //         reject(new Error(e.message));
+            //     } else {
+            //         resolve(result);
+            //     }
+            // });
+            resolve([]);
         });
     }
 
@@ -203,14 +204,15 @@ export class RequestBuilder {
      */
     _updateSessionRules(options) {
         return new Promise((resolve, reject) => {
-            chrome.declarativeNetRequest.updateSessionRules(options, () => {
-                const e = chrome.runtime.lastError;
-                if (e) {
-                    reject(new Error(e.message));
-                } else {
-                    resolve();
-                }
-            });
+            // chrome.declarativeNetRequest.updateSessionRules(options, () => {
+            //     const e = chrome.runtime.lastError;
+            //     if (e) {
+            //         reject(new Error(e.message));
+            //     } else {
+            //         resolve();
+            //     }
+            // });
+            resolve();
         });
     }
 
@@ -246,14 +248,15 @@ export class RequestBuilder {
      */
     _getDynamicRules() {
         return new Promise((resolve, reject) => {
-            chrome.declarativeNetRequest.getDynamicRules((result) => {
-                const e = chrome.runtime.lastError;
-                if (e) {
-                    reject(new Error(e.message));
-                } else {
-                    resolve(result);
-                }
-            });
+            // chrome.declarativeNetRequest.getDynamicRules((result) => {
+            //     const e = chrome.runtime.lastError;
+            //     if (e) {
+            //         reject(new Error(e.message));
+            //     } else {
+                    // resolve(result);
+            //     }
+            // });
+            resolve([]);
         });
     }
 
@@ -263,14 +266,15 @@ export class RequestBuilder {
      */
     _updateDynamicRules(options) {
         return new Promise((resolve, reject) => {
-            chrome.declarativeNetRequest.updateDynamicRules(options, () => {
-                const e = chrome.runtime.lastError;
-                if (e) {
-                    reject(new Error(e.message));
-                } else {
-                    resolve();
-                }
-            });
+            // chrome.declarativeNetRequest.updateDynamicRules(options, () => {
+            //     const e = chrome.runtime.lastError;
+            //     if (e) {
+            //         reject(new Error(e.message));
+            //     } else {
+            //         resolve();
+            //     }
+            // });
+            resolve();
         });
     }
 

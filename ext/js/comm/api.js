@@ -440,8 +440,14 @@ export class API {
                         if (typeof error !== 'undefined') {
                             reject(ExtensionError.deserialize(/** @type {import('core').SerializedError} */(error)));
                         } else {
-                            const {result} = /** @type {import('core').UnknownObject} */ (response);
-                            resolve(/** @type {import('api').ApiReturn<TAction>} */(result));
+                            if ('result' in /** @type {import('core').UnknownObject} */ (response)) {
+                                const {result} = /** @type {import('core').UnknownObject} */ (response);
+                                resolve(/** @type {import('api').ApiReturn<TAction>} */(result));
+                            } else {
+                                // Some non-extension bridges return the raw result payload directly.
+                                // Accept it to keep content scripts functional (e.g. injected WebView content scripts).
+                                resolve(/** @type {import('api').ApiReturn<TAction>} */ (/** @type {unknown} */ (response)));
+                            }
                         }
                     } else {
                         const message = response === null ? 'Unexpected null response. You may need to refresh the page.' : `Unexpected response of type ${typeof response}. You may need to refresh the page.`;
