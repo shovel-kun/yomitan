@@ -34,7 +34,6 @@ if (globalThis.__yomitanBackgroundMainStarted !== true) {
         // path and should not be echoed back as "push" messages.
         if (sender && sender.id === 1) {
             const messageAndSender = {message, sender: {id: 1}};
-            console.log('Sent message to WebView:', JSON.stringify(messageAndSender));
             returns(JSON.stringify(messageAndSender));
 
             // Clear callback registries for sendMessageIgnoreResponse-style calls.
@@ -57,5 +56,5 @@ if (globalThis.__yomitanBackgroundMainStarted !== true) {
 
     void main();
 } else {
-    console.log('background-main already started; skipping duplicate initialization');
+    // Already started; skip duplicate initialization.
 }

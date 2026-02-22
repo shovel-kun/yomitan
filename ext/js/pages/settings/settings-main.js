@@ -52,125 +52,83 @@ import {StatusFooter} from './status-footer.js';
 import {StorageController} from './storage-controller.js';
 import {TranslationTextReplacementsController} from './translation-text-replacements-controller.js';
 import {chrome} from '../../chrome-mock.js';
+import {arrayBufferToBase64} from '../../data/array-buffer-util.js';
 
 globalThis.senderContext = 4;
 
-const callbackMap = new Map();
-// If the WebSocket reconnects or JS is evaluated in an unexpected order, a response can arrive
-// before the callback is registered. Buffer it to avoid hanging actions.
-const pendingResponses = new Map();
+// The KMP JS bridge can be injected slightly after page scripts run on some platforms.
+// Queue outbound messages until a bridge becomes available so settings doesn't stall on startup.
+const nativeMessageQueue = [];
+let nativeQueueFlushScheduled = false;
 
-// WebSocket bridge: high-throughput transport between WebView and native backend.
-const messageQueue = [];
-let isBridgeReady = false;
-/** @type {WebSocket?} */
-let bridgeSocket = null;
-let reconnectTimer = null;
+function flushNativeMessageQueue() {
+    nativeQueueFlushScheduled = false;
 
-function getBridgeUrl() {
-    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${scheme}://${location.host}/bridge`;
-}
-
-function connectBridge() {
-    if (bridgeSocket && (bridgeSocket.readyState === WebSocket.OPEN || bridgeSocket.readyState === WebSocket.CONNECTING)) {
+    const hasKmpBridge = (window.kmpJsBridge && typeof window.kmpJsBridge.callNative === 'function');
+    if (!hasKmpBridge) {
+        if (nativeMessageQueue.length > 0) {
+            nativeQueueFlushScheduled = true;
+            setTimeout(flushNativeMessageQueue, 50);
+        }
         return;
     }
 
-    isBridgeReady = false;
-    bridgeSocket = new WebSocket(getBridgeUrl());
-
-    bridgeSocket.addEventListener('open', () => {
-        isBridgeReady = true;
-        while (messageQueue.length > 0) {
-            bridgeSocket.send(messageQueue.shift());
-        }
-    });
-
-    bridgeSocket.addEventListener('message', (event) => {
-        let message;
-        try {
-            message = JSON.parse(event.data);
-        } catch (e) {
-            console.error('Failed to parse native message:', e);
-            return;
-        }
-        window.onNativeMessage(message);
-    });
-
-    bridgeSocket.addEventListener('close', () => {
-        isBridgeReady = false;
-        if (reconnectTimer === null) {
-            reconnectTimer = setTimeout(() => {
-                reconnectTimer = null;
-                connectBridge();
-            }, 250);
-        }
-    });
-}
-
-function sendToNativeBridge(message, sender, callback) {
-    const messageAndSender = {message, sender};
-    const payload = JSON.stringify(messageAndSender);
-    if (isBridgeReady && bridgeSocket) {
-        bridgeSocket.send(payload);
-    } else {
-        messageQueue.push(payload);
+    while (nativeMessageQueue.length > 0) {
+        const payload = nativeMessageQueue.shift();
+        window.kmpJsBridge.callNative('postMessage', payload, null);
     }
 }
 
-window.onNativeMessage = function(message) {
-    // try {
-    //     // console.log('Received message from RN environment:', JSON.stringify(message));
-    //     message = JSON.parse(message);
-    //     console.log('Parsed message from RN:', message);
-    // } catch (error) {
-    //     console.error('Failed to parse message from RN environment:', error);
-    //     return;
-    // }
+function postMessageToNative(message, sender) {
+    const payload = JSON.stringify({message, sender});
 
-    if (message && typeof message === 'object' && 'messageId' in message && 'response' in message) {
+    if (window.kmpJsBridge && typeof window.kmpJsBridge.callNative === 'function') {
+        window.kmpJsBridge.callNative('postMessage', payload, null);
+        return;
+    }
+
+    nativeMessageQueue.push(payload);
+    if (!nativeQueueFlushScheduled) {
+        nativeQueueFlushScheduled = true;
+        setTimeout(flushNativeMessageQueue, 50);
+    }
+}
+
+const callbackMap = new Map();
+window.onNativeMessage = function(message) {
+    try {
+        message = JSON.parse(decodeURI(message));
+    } catch (error) {
+        console.error('Failed to parse message from native environment:', error);
+        return;
+    }
+
+    if (message.messageId !== undefined && message.messageId !== null && message.response) {
         const callback = callbackMap.get(message.messageId);
         if (callback) {
-            // console.log('Calling callback:', callback);
             callback(message.response);
             callbackMap.delete(message.messageId);
-        } else {
-            pendingResponses.set(message.messageId, message.response);
         }
+    } else if (message.sender) {
+        chrome.runtime.sendMessageWithSender(message.message, message.sender.id);
     } else {
-        if (message.sender) {
-            // console.log('Sending message!:', JSON.stringify(message));
-            chrome.runtime.sendMessageWithSender(message.message, message.sender.id);
-        } else {
-            chrome.runtime.sendMessage(message);
-        }
+        chrome.runtime.sendMessage(message);
     }
 };
-
-connectBridge();
 
 // Listens to all messages and decides whether to forward them to native
 chrome.runtime.onMessage.addListener(function(message, sender, callback) {
     if (sender.id === globalThis.senderContext) {
-        // if (window.kmpJsBridge) {
-        //     const messageAndSender = {message, sender};
-        //     console.log('Sent message to RN:', JSON.stringify(messageAndSender));
-        //     window.kmpJsBridge.callNative('postMessage', JSON.stringify(messageAndSender), null);
-        // }
-
-        if (message.params && message.params.messageId !== undefined) {
-            callbackMap.set(message.params.messageId, callback);
-            if (pendingResponses.has(message.params.messageId)) {
-                const response = pendingResponses.get(message.params.messageId);
-                pendingResponses.delete(message.params.messageId);
-                callback(response);
-                callbackMap.delete(message.params.messageId);
-                return true;
-            }
+        // TODO: Remove once we do all archive opening in native
+        if (message.params && message.params.archiveContent !== undefined) {
+            message.params.archiveContent = arrayBufferToBase64(message.params.archiveContent);
         }
 
-        sendToNativeBridge(message, sender, callback);
+        postMessageToNative(message, sender);
+
+        if (message.params && message.params.messageId !== undefined) {
+            callbackMap.set(message.params.callbackId, callback);
+        }
     }
     return true;
 });

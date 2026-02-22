@@ -185,8 +185,9 @@ export class ObjectPropertyAccessor {
                 case 'empty': // Empty
                 case 'id-start': // Expecting identifier start
                     if (v === 0x5b) { // '['
-                        // Some callers may generate paths like `foo.[0]` (dot before bracket).
-                        // Treat this as equivalent to `foo[0]` for robustness.
+                        if (state === 'id-start') {
+                            throw new Error(`Unexpected character: ${c}`);
+                        }
                         state = 'open-bracket';
                     } else if (
                         (v >= 0x41 && v <= 0x5a) || // ['A', 'Z']

@@ -182,9 +182,9 @@ export class DictionaryWorker {
      */
     _onMessageProgress(params, onProgress) {
         const {args} = params;
-        // Progress needs to be streamed to the WebView. In the QuickJS backend, we can emit it
+        // Progress needs to be streamed to the WebView. In the embedded QuickJS backend, we emit it
         // through the native bridge by calling `returns(...)`, which Kotlin forwards to active
-        // WebSocket sessions. (No session => broadcast; acceptable for now.)
+        // WebView sessions (or broadcasts if session is unknown).
         if (typeof globalThis.returns === 'function') {
             globalThis.returns(JSON.stringify({message: {action: 'progress', params: args}, sender: {id: 1}}));
             return;

@@ -82,13 +82,11 @@ export class WebExtension extends EventDispatcher {
     sendMessagePromise(message) {
         return new Promise((resolve, reject) => {
             try {
-                console.log('sendMessagePromise: Sending message to RN:', message);
                 this.sendMessage(message, (response) => {
                     const error = this.getLastError();
                     if (error !== null) {
                         reject(error);
                     } else {
-                        console.log('sendMessagePromise: Received response from RN:', response);
                         resolve(response);
                     }
                 });

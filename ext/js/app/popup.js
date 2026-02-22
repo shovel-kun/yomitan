@@ -498,20 +498,17 @@ export class Popup extends EventDispatcher {
           /** @type {import('application').ApiMap} */
           const apiMap = createApiMap([['popupReady', () => { resolve(); }]]); /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('application').ApiMessageAny>} */
           const onMessage = ({ action, params }, _sender, callback) => invokeApiMapHandler(apiMap, action, params, [], callback);
-          chrome.runtime.onMessage.addListener(onMessage);
-          try {
-            console.log('popup.js: Sending message to popup');
-            chrome.runtime.sendMessage({ action: 'popupConnected' });
-            await promise;
-          } finally {
-            chrome.runtime.onMessage.removeListener(onMessage);
-          }
-        }
-
-        console.log('Connecting to popup');
-        await connectPopup();
-        this._frameConnected = true;
-        console.log('Connected to popup');
+	          chrome.runtime.onMessage.addListener(onMessage);
+	          try {
+	            chrome.runtime.sendMessage({ action: 'popupConnected' });
+	            await promise;
+	          } finally {
+	            chrome.runtime.onMessage.removeListener(onMessage);
+	          }
+	        }
+	
+	        await connectPopup();
+	        this._frameConnected = true;
 
         // Configure
         /** @type {import('display').DirectApiParams<'displayConfigure'>} */
@@ -641,7 +638,6 @@ export class Popup extends EventDispatcher {
      * @param {import('document-util').NormalizedWritingMode} writingMode
      */
     async _show(sourceRects, writingMode) {
-        console.log('Showing popup');
         const injected = await this._inject();
         if (!injected) { return; }
 
