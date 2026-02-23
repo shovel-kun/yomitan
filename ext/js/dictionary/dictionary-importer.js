@@ -30,11 +30,7 @@ import {parseJson} from '../core/json.js';
 import {toError} from '../core/to-error.js';
 import {stringReverse} from '../core/utilities.js';
 import {getFileExtensionFromImageMediaType, getImageMediaTypeFromFileName} from '../media/media-util.js';
-import * as FileSystem from 'expo-file-system';
-import { Directory, File, Paths } from 'expo-file-system/next';
-import * as ZipArchive from 'react-native-zip-archive';
-import { XMLParser } from 'fast-xml-parser';
-import { Image } from 'react-native';
+// Zip/File/Image APIs are provided natively by the KMP host (QuickJS bindings).
 
 const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValidators} */ (/** @type {unknown} */ (ajvSchemas0));
 // TODO: Maybe use the no workers/streams version of https://gildas-lormeau.github.io/zip.js/
@@ -43,7 +39,45 @@ const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValida
 // const TextWriter = /** @type {typeof import('@zip.js/zip.js').TextWriter} */ (/** @type {unknown} */ (TextWriter0));
 // const Uint8ArrayReader = /** @type {typeof import('@zip.js/zip.js').Uint8ArrayReader} */ (/** @type {unknown} */ (Uint8ArrayReader0));
 // const ZipReader = /** @type {typeof import('@zip.js/zip.js').ZipReader} */ (/** @type {unknown} */ (ZipReader0));
-const extractDir = new Directory(Paths.cache, 'extracted_dictionary');
+/**
+ * Native zip API (provided by the KMP host via QuickJS bindings).
+ * @typedef {{
+ *  _nativeZipListEntries: (zipUriOrPath: string) => string,
+ *  _nativeZipReadEntryText: (zipUriOrPath: string, entryName: string) => string,
+ *  _nativeZipReadEntryBase64: (zipUriOrPath: string, entryName: string) => string,
+ *  _nativeZipGetImageSize: (zipUriOrPath: string, entryName: string) => string
+ * }} NativeZipApi
+ */
+
+/**
+ * @returns {NativeZipApi}
+ */
+function getNativeZip() {
+    const api = /** @type {Partial<NativeZipApi>} */ (/** @type {unknown} */ (globalThis));
+    if (
+        typeof api._nativeZipListEntries !== 'function' ||
+        typeof api._nativeZipReadEntryText !== 'function' ||
+        typeof api._nativeZipReadEntryBase64 !== 'function' ||
+        typeof api._nativeZipGetImageSize !== 'function'
+    ) {
+        throw new Error('Native zip bindings not available');
+    }
+    return /** @type {NativeZipApi} */ (api);
+}
+
+/**
+ * @template T
+ * @param {string} text
+ * @param {T} fallback
+ * @returns {T}
+ */
+function safeJsonParse(text, fallback) {
+    try {
+        return /** @type {T} */ (JSON.parse(text));
+    } catch {
+        return fallback;
+    }
+}
 
 export class DictionaryImporter {
     /**
@@ -72,6 +106,9 @@ export class DictionaryImporter {
         if (!dictionaryDatabase.isPrepared()) {
             throw new Error('Database is not ready');
         }
+
+        /** @type {string} */
+        this._archiveUri = archiveUri;
 
         this._progressReset();
 
@@ -187,7 +224,7 @@ export class DictionaryImporter {
         const stylesFile = fileMap.get(stylesFileName);
         let styles = '';
         if (typeof stylesFile !== 'undefined') {
-            styles = new File(stylesFile.filename).text();
+            styles = getNativeZip()._nativeZipReadEntryText(this._archiveUri, stylesFileName);
             const cssErrors = this._validateCss(styles);
             if (cssErrors.length > 0) {
                 return {
@@ -248,8 +285,7 @@ export class DictionaryImporter {
           console.error('Error importing dictionary:', e);
           throw e;
       } finally {
-          // Cleanup
-          extractDir.delete()
+          // NOP (native zip does not extract to disk)
       }
   }
 
@@ -258,42 +294,14 @@ export class DictionaryImporter {
      * @returns {Promise<import('dictionary-importer').ArchiveFileMap>}
      */
     async _getFilesFromArchive(archiveContent) {
-        // Extract archive
-        console.log('Extracting archive');
-        await ZipArchive.unzip(archiveContent, extractDir.uri);
+        const nativeZip = getNativeZip();
+        const entries = safeJsonParse(nativeZip._nativeZipListEntries(archiveContent), []);
 
-        // Get file list
-        console.log('Getting file list');
-        /**
-         * @param {string} path
-         * @param {string} base
-         * @returns {import('dictionary-importer').ArchiveFileMap}
-         */
-        const readDirectoryRecursive = (path, base = '') => {
-            const fileList = new Directory(path).list();
-            let fileMap = new Map();
-
-            for (const file of fileList) {
-                const fullPath = `${path}/${file.name}`;
-                const relativePath = base ? `${base}/${file.name}` : file.name;
-
-                if (file instanceof Directory) {
-                    const subDirMap = readDirectoryRecursive(
-                        fullPath,
-                        relativePath,
-                    );
-                    subDirMap.forEach((value, key) => fileMap.set(key, value));
-                } else {
-                    fileMap.set(relativePath, {
-                        filename: fullPath
-                    });
-                }
-            }
-
-            return fileMap;
-        };
-
-        const fileMap = readDirectoryRecursive(extractDir.uri);
+        /** @type {import('dictionary-importer').ArchiveFileMap} */
+        const fileMap = new Map();
+        for (const name of entries) {
+            fileMap.set(name, {filename: name});
+        }
         return fileMap;
 
         // const zipFileReader = new Uint8ArrayReader(new Uint8Array(archiveContent));
@@ -313,6 +321,7 @@ export class DictionaryImporter {
      * @throws {Error}
      */
     async _readAndValidateIndex(fileMap) {
+        const nativeZip = getNativeZip();
         const indexFileName = 'index.json';
         const indexFile = fileMap.get(indexFileName);
         if (typeof indexFile === 'undefined') {
@@ -320,7 +329,7 @@ export class DictionaryImporter {
         }
         // const indexFile2 = /** @type {import('@zip.js/zip.js').Entry} */ (indexFile);
 
-        const indexContent = new File(indexFile.filename).text();
+        const indexContent = nativeZip._nativeZipReadEntryText(this._archiveUri, indexFileName);
         const index = /** @type {unknown} */ (parseJson(indexContent));
 
         if (!ajvSchemas.dictionaryIndex(index)) {
@@ -754,8 +763,7 @@ export class DictionaryImporter {
         // Load file content
         let content;
         try {
-          const base64Content = new File(file.filename).base64();
-          content = base64Content;
+          content = getNativeZip()._nativeZipReadEntryBase64(this._archiveUri, path);
         } catch (e) {
           throw createError('Could not read image file');
         }
@@ -770,12 +778,10 @@ export class DictionaryImporter {
         let height;
   
         try {
-          /** @type {string} */
-          const uri = file.filename;
-          const isSvg = uri.toLowerCase().endsWith('.svg');
+          const isSvg = path.toLowerCase().endsWith('.svg');
     
           if (isSvg) {
-            const svgXML = new File(file.filename).text()
+            const svgXML = getNativeZip()._nativeZipReadEntryText(this._archiveUri, path);
 
             const svgDimensions = this._getSVGDimensions(svgXML);
             if (svgDimensions) {
@@ -785,15 +791,9 @@ export class DictionaryImporter {
               throw createError('Could not extract SVG dimensions');
             }
           } else {
-            const imageSize = await new Promise((resolve, reject) => {
-              Image.getSize(
-                uri,
-                (w, h) => resolve({ width: w, height: h }),
-                reject,
-              );
-            });
-            width = imageSize.width;
-            height = imageSize.height;
+            const size = safeJsonParse(getNativeZip()._nativeZipGetImageSize(this._archiveUri, path), {width: 0, height: 0});
+            width = size.width;
+            height = size.height;
           }
         } catch (error) {
           console.error(error);
@@ -820,31 +820,34 @@ export class DictionaryImporter {
        * @returns {{width: number, height: number, source: 'width/height' | 'viewBox'} | null}
        */
       _getSVGDimensions(svgString) {
-        const parser = new XMLParser({ignoreAttributes: false, attributeNamePrefix: ''});
-        const parsedSVG = parser.parse(svgString);
-        const svgAttributes = parsedSVG.svg;
+        const svgTagMatch = /<svg\b[^>]*>/i.exec(svgString);
+        if (!svgTagMatch) return null;
+        const tag = svgTagMatch[0];
 
-        // Get width/height props
-        if (svgAttributes.width && svgAttributes.height) {
-          return {
-            width: parseFloat(svgAttributes.width),
-            height: parseFloat(svgAttributes.height),
-            source: 'width/height',
-          };
+        const widthMatch = /\bwidth\s*=\s*["']([^"']+)["']/i.exec(tag);
+        const heightMatch = /\bheight\s*=\s*["']([^"']+)["']/i.exec(tag);
+        if (widthMatch && heightMatch) {
+          const width = parseFloat(widthMatch[1]);
+          const height = parseFloat(heightMatch[1]);
+          if (Number.isFinite(width) && Number.isFinite(height)) {
+            return {width, height, source: 'width/height'};
+          }
         }
 
-        // Fall back to viewBox (format: 'minX minY width height')
-        if (svgAttributes.viewBox) {
-          const [_, __, vbWidth, vbHeight] = svgAttributes.viewBox.split(/\s+/);
-          return {
-            width: parseFloat(vbWidth),
-            height: parseFloat(vbHeight),
-            source: 'viewBox',
-          };
+        const viewBoxMatch = /\bviewBox\s*=\s*["']([^"']+)["']/i.exec(tag);
+        if (viewBoxMatch) {
+          const parts = viewBoxMatch[1].trim().split(/\s+/);
+          if (parts.length === 4) {
+            const vbWidth = parseFloat(parts[2]);
+            const vbHeight = parseFloat(parts[3]);
+            if (Number.isFinite(vbWidth) && Number.isFinite(vbHeight)) {
+              return {width: vbWidth, height: vbHeight, source: 'viewBox'};
+            }
+          }
         }
 
-       return null;
-    }
+        return null;
+      }
 
     /**
      * @param {import('dictionary-data').TermV1} entry
@@ -974,7 +977,7 @@ export class DictionaryImporter {
 
         const results = [];
         for (const file of files) {
-            const content = await FileSystem.readAsStringAsync(file.filename);
+            const content = getNativeZip()._nativeZipReadEntryText(this._archiveUri, file.filename);
             let entries;
 
             try {

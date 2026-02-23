@@ -83,7 +83,7 @@ export class AnkiNoteBuilder {
         // Make URL field blank if URL source is Yomitan
         try {
             const url = new URL(context.url);
-            if (url.protocol === new URL(import.meta.url).protocol) {
+            if (url.protocol === new URL(chrome.runtime.getURL('/')).protocol) {
                 context.url = '';
             }
         } catch (e) {

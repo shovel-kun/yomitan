@@ -30,16 +30,67 @@ globalThis.senderContext = 2;
 
 const callbackMap = new Map();
 
-window.onNativeMessage = function(message) {
-    try {
-        // console.log('Received message from RN environment:', message);
-        message = JSON.parse(decodeURI(message));
-        console.log('Parsed message from RN environment:', message);
-    } catch (error) {
-        console.error('Failed to parse message from RN environment:', error);
+// WebSocket bridge: high-throughput transport between WebView and native backend.
+const messageQueue = [];
+let isBridgeReady = false;
+/** @type {WebSocket?} */
+let bridgeSocket = null;
+let reconnectTimer = null;
+
+function getBridgeUrl() {
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${location.host}/bridge`;
+}
+
+function connectBridge() {
+    if (bridgeSocket && (bridgeSocket.readyState === WebSocket.OPEN || bridgeSocket.readyState === WebSocket.CONNECTING)) {
+        return;
     }
 
-    if (message.messageId !== undefined && message.messageId !== null && message.response) {
+    isBridgeReady = false;
+    bridgeSocket = new WebSocket(getBridgeUrl());
+
+    bridgeSocket.addEventListener('open', () => {
+        isBridgeReady = true;
+        while (messageQueue.length > 0) {
+            bridgeSocket.send(messageQueue.shift());
+        }
+    });
+
+    bridgeSocket.addEventListener('message', (event) => {
+        let message;
+        try {
+            message = JSON.parse(event.data);
+        } catch (e) {
+            console.error('Failed to parse native message:', e);
+            return;
+        }
+        window.onNativeMessage(message);
+    });
+
+    bridgeSocket.addEventListener('close', () => {
+        isBridgeReady = false;
+        if (reconnectTimer === null) {
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connectBridge();
+            }, 250);
+        }
+    });
+}
+
+function sendToNativeBridge(message, sender, callback) {
+    const messageAndSender = {message, sender};
+    const payload = JSON.stringify(messageAndSender);
+    if (isBridgeReady && bridgeSocket) {
+        bridgeSocket.send(payload);
+    } else {
+        messageQueue.push(payload);
+    }
+}
+
+window.onNativeMessage = function(message) {
+    if (message && typeof message === 'object' && 'messageId' in message && 'response' in message) {
         const callback = callbackMap.get(message.messageId);
         if (callback) {
             callback(message.response);
@@ -54,21 +105,16 @@ window.onNativeMessage = function(message) {
     }
 };
 
-// Listens to all messages and decides whether to forward them to RN
+connectBridge();
+
+// Listens to all messages and decides whether to forward them to native
 chrome.runtime.onMessage.addListener(function(message, sender, callback) {
     if (sender.id === globalThis.senderContext) {
-        if (window.ReactNativeWebView) {
-            const messageAndSender = {
-                message,
-                sender,
-            };
-            console.log('Sent message to RN environment:', JSON.stringify(messageAndSender));
-            window.ReactNativeWebView.postMessage(JSON.stringify(messageAndSender));
+        if (message.params && message.params.messageId !== undefined) {
+            callbackMap.set(message.params.messageId, callback);
         }
 
-        if (message.params && message.params.messageId !== undefined) {
-            callbackMap.set(message.params.callbackId, callback);
-        }
+        sendToNativeBridge(message, sender, callback);
     }
     return true;
 });

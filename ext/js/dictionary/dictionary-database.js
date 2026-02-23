@@ -23,6 +23,7 @@
 import {log} from '../core/log.js';
 // import {safePerformance} from '../core/safe-performance.js';
 import {stringReverse} from '../core/utilities.js';
+import {base64ToArrayBuffer} from '../data/array-buffer-util.js';
 import {Database} from '../data/database.js';
 
 export class DictionaryDatabase {
@@ -159,7 +160,8 @@ export class DictionaryDatabase {
         await this._db.open(
             this._dbName,
             60,
-            isWorker ? null : upgrade,
+            // isWorker ? null : upgrade,
+            upgrade,
         );
 
         // when we are not a worker ourselves, create a worker which is basically just a wrapper around this class, which we can use to offload some functions to
@@ -770,7 +772,8 @@ export class DictionaryDatabase {
      */
     _createMedia(row, {itemIndex: index}) {
         const {dictionary, path, mediaType, width, height, content} = row;
-        return {index, dictionary, path, mediaType, width, height, content};
+        const content2 = (typeof content === 'string') ? base64ToArrayBuffer(content) : content;
+        return {index, dictionary, path, mediaType, width, height, content: content2};
     }
 
     /**
@@ -780,7 +783,8 @@ export class DictionaryDatabase {
      */
     _createDrawMedia(row, {itemIndex: index, item: {canvasIndexes, canvasWidth, canvasHeight, generation}}) {
         const {dictionary, path, mediaType, width, height, content} = row;
-        return {index, dictionary, path, mediaType, width, height, content, canvasIndexes, canvasWidth, canvasHeight, generation};
+        const content2 = (typeof content === 'string') ? base64ToArrayBuffer(content) : content;
+        return {index, dictionary, path, mediaType, width, height, content: content2, canvasIndexes, canvasWidth, canvasHeight, generation};
     }
 
     /**

@@ -16,17 +16,46 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import '../chrome-mock.js'
 import {log} from '../core/log.js';
 import {WebExtension} from '../extension/web-extension.js';
 import {Backend} from './backend.js';
 
+// Make startup idempotent: on some platforms the backend module can be evaluated more than once.
+if (globalThis.__yomitanBackgroundMainStarted !== true) {
+    globalThis.__yomitanBackgroundMainStarted = true;
+
+    // Background context sender id (matches chrome-mock conventions and enables DictionaryWorker in this runtime).
+    globalThis.senderContext = 1;
+
+    const handleChromeMessage = (message, sender, callback) => {
+        // Only forward background-originated messages (push/broadcasts) to WebViews.
+        // Requests from WebViews (sender.id !== 1) are handled via the normal sendResponse callback
+        // path and should not be echoed back as "push" messages.
+        if (sender && sender.id === 1) {
+            const messageAndSender = {message, sender: {id: 1}};
+            console.log('Sent message to WebView:', JSON.stringify(messageAndSender));
+            returns(JSON.stringify(messageAndSender));
+
+            // Clear callback registries for sendMessageIgnoreResponse-style calls.
+            if (typeof callback === 'function') {
+                callback({});
+            }
+        }
+    };
+
+    chrome.runtime.onMessage.addListener(handleChromeMessage);
+
 /** Entry point. */
-async function main() {
-    const webExtension = new WebExtension();
-    log.configure(webExtension.extensionName);
+    async function main() {
+        const webExtension = new WebExtension();
+        log.configure(webExtension.extensionName);
 
-    const backend = new Backend(webExtension);
-    await backend.prepare();
+        const backend = new Backend(webExtension);
+        await backend.prepare();
+    }
+
+    void main();
+} else {
+    console.log('background-main already started; skipping duplicate initialization');
 }
-
-void main();

@@ -73,7 +73,12 @@ export class DictionaryWorker {
      */
     _invoke(action, params, transfer, onProgress, formatResult) {
         return new Promise(async (resolve, reject) => {
-            if (global.senderContext === 1) {
+            const senderContext =
+                (typeof globalThis !== 'undefined' && typeof globalThis.senderContext !== 'undefined') ? globalThis.senderContext :
+                (typeof global !== 'undefined' && typeof global.senderContext !== 'undefined') ? global.senderContext :
+                void 0;
+
+            if (senderContext === 1) {
                 const {DictionaryWorkerHandler} = await import('./dictionary-worker-handler.js');
                 const worker = new DictionaryWorkerHandler();
                 worker.prepare();
@@ -94,6 +99,8 @@ export class DictionaryWorker {
                 worker.addEventListener('message', onMessage);
                 worker.postMessage({action, params});
                 // worker.postMessage({action, params}, transfer);
+            } else {
+                reject(new Error(`DictionaryWorker unavailable (senderContext=${String(senderContext)})`));
             }
         });
     }
@@ -174,9 +181,14 @@ export class DictionaryWorker {
      * @param {?(...args: unknown[]) => void} onProgress
      */
     _onMessageProgress(params, onProgress) {
-        // if (typeof onProgress !== 'function') { return; }
         const {args} = params;
-        // onProgress(...args);
+        // Progress needs to be streamed to the WebView. In the QuickJS backend, we can emit it
+        // through the native bridge by calling `returns(...)`, which Kotlin forwards to active
+        // WebSocket sessions. (No session => broadcast; acceptable for now.)
+        if (typeof globalThis.returns === 'function') {
+            globalThis.returns(JSON.stringify({message: {action: 'progress', params: args}, sender: {id: 1}}));
+            return;
+        }
         chrome.runtime.sendMessage({action: 'progress', params: args});
     }
 

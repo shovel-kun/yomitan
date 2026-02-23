@@ -228,10 +228,12 @@ export class Display extends EventDispatcher {
         this.registerWindowMessageHandlers([
             ['displayExtensionUnloaded', this._onMessageExtensionUnloaded.bind(this)],
         ]);
-        console.log('display.js: Creating apiMap to replace crossFrame,', this.apiMap);
         this.apiMap = createApiMap([
-          ["displayPopupMessage1", this._onDisplayPopupMessage1.bind(this)],
-          ["displayPopupMessage2", this._onDisplayPopupMessage2.bind(this)],
+          // In our WebView-native setup, `displayPopupMessage1` can arrive as an already-unwrapped
+          // direct API message ({action, params}) from the content script.
+          // Keep the original authenticated path as a fallback.
+          ['displayPopupMessage1', this._onDisplayPopupMessage1.bind(this)],
+          ['displayPopupMessage2', this._onDisplayPopupMessage2.bind(this)],
         ]);
         /* eslint-enable @stylistic/no-multi-spaces */
     }
@@ -356,23 +358,29 @@ export class Display extends EventDispatcher {
         // ]);
 
         globalThis.chrome.runtime.onMessage.addListener((message) => {
-            // console.log("Received message in display.js: ", message);
-            return invokeApiMapHandler(
+            invokeApiMapHandler(
                 this.apiMap,
                 message.action,
                 message.params,
                 [],
                 (result) => {
-                    const { error } = result;
-                    if (typeof error !== "undefined") {
-                      throw error;
+                    const {error} = result;
+                    if (typeof error !== 'undefined') {
+                        // Avoid throwing a serialized error object, which would show up as
+                        // `Uncaught (in promise) #<Object>` and break display initialization.
+                        try {
+                            // eslint-disable-next-line no-console
+                            console.error('display.js: message handler error', error);
+                        } catch (e) {
+                            // NOP
+                        }
                     }
-                    return result.result;
                 },
                 () => {
-                    throw new Error(`Invalid action: ${message.action}`);
+                    // Unknown action; ignore to avoid breaking unrelated message flows.
                 },
             );
+            return true;
         });
         window.addEventListener('message', this._onWindowMessage.bind(this), false);
 
@@ -717,6 +725,17 @@ export class Display extends EventDispatcher {
 
     /** @type {import('cross-frame-api').ApiHandler<'displayPopupMessage1'>} */
     async _onDisplayPopupMessage1(message) {
+        // In WebView-native mode, the content script can send an already-unwrapped direct API message
+        // ({action, params}) via chrome.runtime.sendMessage({action:'displayPopupMessage1', params: ...}).
+        // Preserve the upstream authenticated path as a fallback.
+        if (
+            typeof message === 'object' &&
+            message !== null &&
+            typeof /** @type {any} */ (message).action === 'string'
+        ) {
+            return this._onDisplayPopupMessage2(/** @type {import('display').DirectApiMessageAny} */ (message));
+        }
+
         /** @type {import('display').DirectApiMessageAny} */
         const messageInner = this._authenticateMessageData(message);
         return await this._onDisplayPopupMessage2(messageInner);

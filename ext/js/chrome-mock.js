@@ -19,6 +19,12 @@
 // Refer:
 // https://github.com/chromium/chromium/blob/c2311095314bbdfc78c95d030442b512774bfc42/tools/typescript/definitions/runtime.d.ts
 // https://github.com/chromium/chromium/blob/b11d0cf754e793dd4ad89ab1fa7013bd2d1637d0/chrome/browser/resources/chromeos/accessibility/definitions/runtime.d.ts
+// This module can be evaluated more than once in some bundling/runtime setups.
+// Avoid re-initializing the mock and wiping listeners/callback registries.
+let chrome = globalThis.chrome;
+let CrossFrameAPI = globalThis.CrossFrameAPI;
+
+if (!chrome || chrome.__yomitanChromeMock !== true) {
 class ChromeEvent {
     /**
      * @param {Function | null} listenerAddedCallback Callback to run the first time a listener is added.
@@ -86,6 +92,9 @@ class Port {
      * Disconnects the port
      */
     disconnect() {
+        if (typeof this.__portId === 'number') {
+            chrome.runtime.sendMessage({action: '__portDisconnect', params: {portId: this.__portId}});
+        }
         this.onDisconnect.callListeners(this);
     }
 
@@ -94,6 +103,10 @@ class Port {
      * @param {unknown} message
      */
     postMessage(message) {
+        if (typeof this.__portId === 'number') {
+            chrome.runtime.sendMessage({action: '__portPostMessage', params: {portId: this.__portId, message}});
+            return;
+        }
         // eslint-disable-next-line no-console
         console.log('Posting message', message);
         this.onMessage.callListeners(message);
@@ -105,7 +118,52 @@ const callbackRegistry = {};
 let messageId = 0;
 let callbackId = 0;
 
-const chrome = {
+/**
+ * Ensures a stable tabId/frameId per JS context.
+ * - tabId: shared across frames within the same WebView "tab" (default: 1)
+ * - frameId: 0 for top frame; random non-zero for subframes
+ */
+function ensureFrameIdentity() {
+    if (!(typeof globalThis.tabId === 'number' && Number.isFinite(globalThis.tabId))) {
+        globalThis.tabId = 1;
+    }
+    if (!(typeof globalThis.frameId === 'number' && Number.isFinite(globalThis.frameId))) {
+        let isTop = false;
+        try {
+            isTop = (globalThis.top === globalThis);
+        } catch (e) {
+            isTop = false;
+        }
+        if (isTop) {
+            globalThis.frameId = 0;
+        } else {
+            const n = (Math.random() * 2147483647) | 0;
+            globalThis.frameId = n === 0 ? 1 : n;
+        }
+    }
+}
+
+/**
+ * Creates a Chrome-like message sender object.
+ * Some Yomitan background APIs require `sender.tab.id` (e.g. `api.getZoom`).
+ *
+ * @param {number} id
+ * @returns {{id: number, tab?: {id: number}, frameId?: number}}
+ */
+function createSender(id) {
+    // Background senderContext is 1; avoid pretending background is a tab.
+    if (id === 1) {
+        return {id};
+    }
+    ensureFrameIdentity();
+    return {id, tab: {id: globalThis.tabId}, frameId: globalThis.frameId};
+}
+
+/** @type {Map<number, Port>} */
+const portRegistry = new Map();
+
+chrome = {
+    __yomitanChromeMock: true,
     tabs: {
         /**
          * @param {number} tabId
@@ -118,7 +176,55 @@ const chrome = {
             return new Port(name, sender);
         },
     },
+    // MV3 APIs used by Yomitan's background script. In our embedded WebView/QuickJS environment we
+    // don't actually "inject" scripts/CSS via Chrome; these operations are handled natively, so
+    // these are implemented as no-op success callbacks.
+    scripting: {
+        /**
+         * @param {unknown} _details
+         * @param {Function} [callback]
+         */
+        insertCSS(_details, callback) {
+            if (typeof callback === 'function') {
+                setTimeout(callback, 0);
+            }
+        },
+        /**
+         * @param {unknown} _scripts
+         * @param {Function} [callback]
+         */
+        registerContentScripts(_scripts, callback) {
+            if (typeof callback === 'function') {
+                setTimeout(callback, 0);
+            }
+        },
+        /**
+         * @param {unknown} _filter
+         * @param {Function} callback
+         */
+        getRegisteredContentScripts(_filter, callback) {
+            if (typeof callback === 'function') {
+                setTimeout(() => callback([]), 0);
+            }
+        },
+        /**
+         * @param {unknown} _filter
+         * @param {Function} [callback]
+         */
+        unregisterContentScripts(_filter, callback) {
+            if (typeof callback === 'function') {
+                setTimeout(callback, 0);
+            }
+        },
+    },
     runtime: {
+        /** @param {Function} callback */
+        getPlatformInfo(callback) {
+            const result = {os: 'android', arch: 'arm', nacl_arch: 'arm'};
+            if (typeof callback === 'function') {
+                setTimeout(() => callback(result), 0);
+            }
+        },
         /** @type {ChromeEvent} */
         onMessage: new ChromeEvent(null),
         /**
@@ -156,10 +262,11 @@ const chrome = {
 
             this.onMessage.callListeners(
                 modifiedMessage,
-                {id: globalThis.senderContext},
+                createSender(globalThis.senderContext),
                 (response) => {
                     const registeredCallback = callbackRegistry[modifiedMessage.params.messageId];
                     if (registeredCallback) {
+                        console.log('Response is:', JSON.stringify(response));
                         registeredCallback(response);
                         delete callbackRegistry[modifiedMessage.params.messageId];
                     }
@@ -203,10 +310,11 @@ const chrome = {
 
             this.onMessage.callListeners(
                 modifiedMessage,
-                {id: sender},
+                createSender(sender),
                 (response) => {
                     const registeredCallback = callbackRegistry[modifiedMessage.params.messageId];
                     if (registeredCallback) {
+                        console.log('Response is:', JSON.stringify(response));
                         registeredCallback(response);
                         delete callbackRegistry[modifiedMessage.params.messageId];
                     }
@@ -223,6 +331,25 @@ const chrome = {
             // eslint-disable-next-line no-console
             console.log('Added permission listener');
         }),
+        declarativeNetRequest: {
+            /**
+            * @param {chrome.declarativeNetRequest.UpdateRuleOptions} options
+            * @param {Function} [callback]
+            */
+            updateDynamicRules(options, callback) {
+                if (typeof callback === 'function') {
+                    setTimeout(callback, 0);
+                }
+            },
+            /**
+            * @param {Function} callback
+            */
+            getDynamicRules(callback) {
+                if (typeof callback === 'function') {
+                    setTimeout(() => callback([]), 0);
+                }
+            }
+        },
         /**
          * @param {string} name
          * @returns {Port}
@@ -237,7 +364,10 @@ const chrome = {
          * @returns {string}
          */
         getURL(url) {
-            return `http://127.0.0.1:2453${url}`;
+            const path = (typeof url === 'string' && url.length > 0) ?
+                (url.startsWith('/') ? url : `/${url}`) :
+                '/';
+            return `http://127.0.0.1:2453${path}`;
         },
         /**
          * @returns {chrome.runtime.Manifest}
@@ -413,21 +543,52 @@ const chrome = {
         },
         local: {
             /**
-             * @param {string} key
-             * @param {unknown} value
+             * @param {{[key: string]: unknown}} items
+             * @param {Function} callback
              */
-            set(key, value) {
-                // eslint-disable-next-line no-console
-                console.log('Set local storage', key, value);
+            set(items, callback) {
+                console.log("Setting local storage");
+                try {
+                  for (const [key, value] of Object.entries(items)) {
+                    _nativeStorageSave(key, value);
+                  }
+                  if (callback) {
+                    callback();
+                  }
+                } catch (error) {
+                  console.error("Error setting local storage", error);
+                  if (callback) {
+                    callback(error);
+                  }
+                }
             },
             /**
-             * @param {string} key
-             * @returns {null}
+             * @param {string} keys
+             * @param {Function} callback
              */
-            get(key) {
-                // eslint-disable-next-line no-console
-                console.log('Get local storage', key);
-                return null;
+            async get(keys, callback) {
+                try {
+                  let result = {};
+                  if (Array.isArray(keys)) {
+                    for (const key of keys) {
+                      const value = _nativeStorageLoad(key);
+                      result[key] = value;
+                    }
+                  } else if (typeof keys === "string") {
+                    const value = _nativeStorageLoad(keys);
+                    result[keys] = value;
+                  } else if (typeof keys === "object") {
+                    for (const key of Object.keys(keys)) {
+                      const value = _nativeStorageLoad(key);
+                      result[key] = value ?? keys[key];
+                    }
+                  }
+                  console.log("Got local storage");
+                  callback(result);
+                } catch (error) {
+                  console.error("Error in mock chrome.storage.local.get:", error);
+                  callback({});
+                }
             },
             /**
              * @param {string} key
@@ -442,7 +603,47 @@ const chrome = {
 
 globalThis.chrome = chrome;
 
-class CrossFrameAPI {
+// Native Port plumbing:
+// - Native sends `{action:'__portConnect', params:{portId,name}}` to create a Port and trigger onConnect.
+// - Native sends `{action:'__portDeliver', params:{portId,message}}` to deliver to port.onMessage.
+// - This side sends `{action:'__portPostMessage', params:{portId,message}}` when Port.postMessage is called.
+// - This side sends `{action:'__portDisconnect', params:{portId}}` when Port.disconnect is called.
+chrome.runtime.onMessage.addListener((message) => {
+    if (!message || typeof message !== 'object') { return false; }
+    const {action, params} = message;
+    if (action === '__portConnect') {
+        const portId = params && typeof params.portId === 'number' ? params.portId : null;
+        const name = params && typeof params.name === 'string' ? params.name : '';
+        if (portId === null) { return true; }
+        const port = new Port(name, params && params.sender ? params.sender : void 0);
+        port.__portId = portId;
+        portRegistry.set(portId, port);
+        chrome.runtime.onConnect.callListeners(port);
+        return true;
+    }
+    if (action === '__portDeliver') {
+        const portId = params && typeof params.portId === 'number' ? params.portId : null;
+        if (portId === null) { return true; }
+        const port = portRegistry.get(portId);
+        if (port) {
+            port.onMessage.callListeners(params.message);
+        }
+        return true;
+    }
+    if (action === '__portDisconnectDeliver') {
+        const portId = params && typeof params.portId === 'number' ? params.portId : null;
+        if (portId === null) { return true; }
+        const port = portRegistry.get(portId);
+        if (port) {
+            portRegistry.delete(portId);
+            port.onDisconnect.callListeners(port);
+        }
+        return true;
+    }
+    return false;
+});
+
+CrossFrameAPI = class CrossFrameAPI {
     /**
      * @param {unknown} api
      * @param {number} tabId
@@ -464,6 +665,9 @@ class CrossFrameAPI {
         // eslint-disable-next-line no-console
         console.log('CrossFrameAPI prepared');
     }
+}
+
+globalThis.CrossFrameAPI = CrossFrameAPI;
 }
 
 export {chrome, CrossFrameAPI};
