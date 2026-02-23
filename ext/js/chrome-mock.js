@@ -107,8 +107,6 @@ class Port {
             chrome.runtime.sendMessage({action: '__portPostMessage', params: {portId: this.__portId, message}});
             return;
         }
-        // eslint-disable-next-line no-console
-        console.log('Posting message', message);
         this.onMessage.callListeners(message);
     }
 }
@@ -117,6 +115,18 @@ class Port {
 const callbackRegistry = {};
 let messageId = 0;
 let callbackId = 0;
+
+/** @param {Function} fn */
+function defer(fn) {
+    if (typeof setTimeout === 'function') {
+        setTimeout(fn, 0);
+    } else {
+        fn();
+    }
+}
+
+/** @type {Map<string, unknown>} */
+const sessionStorageMap = new Map();
 
 /**
  * Ensures a stable tabId/frameId per JS context.
@@ -166,6 +176,19 @@ chrome = {
     __yomitanChromeMock: true,
     tabs: {
         /**
+         * @param {{url?: string}} createProperties
+         * @param {(tab: chrome.tabs.Tab) => void} [callback]
+         */
+        create(createProperties, callback) {
+            const tab = /** @type {chrome.tabs.Tab} */ ({
+                id: 1,
+                url: (createProperties && typeof createProperties.url === 'string') ? createProperties.url : '',
+            });
+            if (typeof callback === 'function') {
+                defer(() => callback(tab));
+            }
+        },
+        /**
          * @param {number} tabId
          * @param {{frameId: number, name: string}} connectInfo
          * @returns {Port}
@@ -175,6 +198,42 @@ chrome = {
             const sender = {tab: {id: tabId}, frameId};
             return new Port(name, sender);
         },
+    },
+    declarativeNetRequest: {
+        /**
+         * @param {Function} callback
+         */
+        getSessionRules(callback) {
+            if (typeof callback === 'function') {
+                setTimeout(() => callback([]), 0);
+            }
+        },
+        /**
+         * @param {chrome.declarativeNetRequest.UpdateRuleOptions} _options
+         * @param {Function} [callback]
+         */
+        updateSessionRules(_options, callback) {
+            if (typeof callback === 'function') {
+                setTimeout(callback, 0);
+            }
+        },
+        /**
+         * @param {Function} callback
+         */
+        getDynamicRules(callback) {
+            if (typeof callback === 'function') {
+                setTimeout(() => callback([]), 0);
+            }
+        },
+        /**
+         * @param {chrome.declarativeNetRequest.UpdateRuleOptions} _options
+         * @param {Function} [callback]
+         */
+        updateDynamicRules(_options, callback) {
+            if (typeof callback === 'function') {
+                setTimeout(callback, 0);
+            }
+        }
     },
     // MV3 APIs used by Yomitan's background script. In our embedded WebView/QuickJS environment we
     // don't actually "inject" scripts/CSS via Chrome; these operations are handled natively, so
@@ -266,7 +325,6 @@ chrome = {
                 (response) => {
                     const registeredCallback = callbackRegistry[modifiedMessage.params.messageId];
                     if (registeredCallback) {
-                        console.log('Response is:', JSON.stringify(response));
                         registeredCallback(response);
                         delete callbackRegistry[modifiedMessage.params.messageId];
                     }
@@ -314,42 +372,24 @@ chrome = {
                 (response) => {
                     const registeredCallback = callbackRegistry[modifiedMessage.params.messageId];
                     if (registeredCallback) {
-                        console.log('Response is:', JSON.stringify(response));
                         registeredCallback(response);
                         delete callbackRegistry[modifiedMessage.params.messageId];
                     }
                 },
             );
         },
-        /** @type {ChromeEvent} */
-        onInstalled: new ChromeEvent(() => {
-            // eslint-disable-next-line no-console
-            console.log('Added permission listener');
-        }),
-        /** @type {ChromeEvent} */
-        onConnect: new ChromeEvent(() => {
-            // eslint-disable-next-line no-console
-            console.log('Added permission listener');
-        }),
-        declarativeNetRequest: {
-            /**
-            * @param {chrome.declarativeNetRequest.UpdateRuleOptions} options
-            * @param {Function} [callback]
-            */
-            updateDynamicRules(options, callback) {
-                if (typeof callback === 'function') {
-                    setTimeout(callback, 0);
-                }
-            },
-            /**
-            * @param {Function} callback
-            */
-            getDynamicRules(callback) {
-                if (typeof callback === 'function') {
-                    setTimeout(() => callback([]), 0);
-                }
+        /**
+         * @param {Function} [callback]
+         */
+        openOptionsPage(callback) {
+            if (typeof callback === 'function') {
+                defer(callback);
             }
         },
+        /** @type {ChromeEvent} */
+        onInstalled: new ChromeEvent(null),
+        /** @type {ChromeEvent} */
+        onConnect: new ChromeEvent(null),
         /**
          * @param {string} name
          * @returns {Port}
@@ -485,15 +525,9 @@ chrome = {
     },
     permissions: {
         /** @type {ChromeEvent} */
-        onAdded: new ChromeEvent(() => {
-            // eslint-disable-next-line no-console
-            console.log('Added permission listener');
-        }),
+        onAdded: new ChromeEvent(null),
         /** @type {ChromeEvent} */
-        onRemoved: new ChromeEvent(() => {
-            // eslint-disable-next-line no-console
-            console.log('Added permission listener');
-        }),
+        onRemoved: new ChromeEvent(null),
         /**
          * @param {Function} callback
          */
@@ -517,28 +551,65 @@ chrome = {
     storage: {
         session: {
             /**
-             * @param {string} key
-             * @param {unknown} value
+             * @param {string[]|string|{[key: string]: unknown}} keys
+             * @param {(items: {[key: string]: unknown}) => void} [callback]
+             * @returns {Promise<{[key: string]: unknown}>|void}
              */
-            set(key, value) {
-                // eslint-disable-next-line no-console
-                console.log('Set session storage', key, value);
+            get(keys, callback) {
+                /** @type {{[key: string]: unknown}} */
+                const out = {};
+
+                const readOne = (key, defaultValue) => {
+                    out[key] = sessionStorageMap.has(key) ? sessionStorageMap.get(key) : defaultValue;
+                };
+
+                if (Array.isArray(keys)) {
+                    for (const key of keys) readOne(key, void 0);
+                } else if (typeof keys === 'string') {
+                    readOne(keys, void 0);
+                } else if (keys && typeof keys === 'object') {
+                    for (const key of Object.keys(keys)) readOne(key, keys[key]);
+                }
+
+                if (typeof callback === 'function') {
+                    defer(() => callback(out));
+                    return;
+                }
+                return Promise.resolve(out);
             },
             /**
-             * @param {string} key
-             * @returns {null}
+             * @param {{[key: string]: unknown}} items
+             * @param {Function} [callback]
+             * @returns {Promise<void>|void}
              */
-            get(key) {
-                // eslint-disable-next-line no-console
-                console.log('Get session storage', key);
-                return null;
+            set(items, callback) {
+                if (items && typeof items === 'object') {
+                    for (const [key, value] of Object.entries(items)) {
+                        sessionStorageMap.set(key, value);
+                    }
+                }
+                if (typeof callback === 'function') {
+                    defer(callback);
+                    return;
+                }
+                return Promise.resolve();
             },
             /**
-             * @param {string} key
+             * @param {string[]|string} keys
+             * @param {Function} [callback]
+             * @returns {Promise<void>|void}
              */
-            remove(key) {
-                // eslint-disable-next-line no-console
-                console.log('Remove session storage', key);
+            remove(keys, callback) {
+                if (Array.isArray(keys)) {
+                    for (const key of keys) sessionStorageMap.delete(key);
+                } else if (typeof keys === 'string') {
+                    sessionStorageMap.delete(keys);
+                }
+                if (typeof callback === 'function') {
+                    defer(callback);
+                    return;
+                }
+                return Promise.resolve();
             },
         },
         local: {
@@ -547,7 +618,6 @@ chrome = {
              * @param {Function} callback
              */
             set(items, callback) {
-                console.log("Setting local storage");
                 try {
                   for (const [key, value] of Object.entries(items)) {
                     _nativeStorageSave(key, value);
@@ -583,7 +653,6 @@ chrome = {
                       result[key] = value ?? keys[key];
                     }
                   }
-                  console.log("Got local storage");
                   callback(result);
                 } catch (error) {
                   console.error("Error in mock chrome.storage.local.get:", error);
@@ -594,8 +663,6 @@ chrome = {
              * @param {string} key
              */
             remove(key) {
-                // eslint-disable-next-line no-console
-                console.log('Remove local storage', key);
             },
         },
     },
@@ -662,8 +729,6 @@ CrossFrameAPI = class CrossFrameAPI {
      * Prepares the API
      */
     prepare() {
-        // eslint-disable-next-line no-console
-        console.log('CrossFrameAPI prepared');
     }
 }
 
