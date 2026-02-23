@@ -49,6 +49,8 @@ const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValida
  * }} NativeZipApi
  */
 
+const NATIVE_ZIP_ERROR_PREFIX = '__NATIVE_ZIP_ERROR__:';
+
 /**
  * @returns {NativeZipApi}
  */
@@ -62,7 +64,29 @@ function getNativeZip() {
     ) {
         throw new Error('Native zip bindings not available');
     }
-    return /** @type {NativeZipApi} */ (api);
+
+    /**
+     * @template {(...args: any[]) => string} T
+     * @param {T} fn
+     * @returns {T}
+     */
+    const wrap = (fn) => /** @type {T} */ ((...args) => {
+        const result = fn(...args);
+        if (typeof result === 'string' && result.startsWith(NATIVE_ZIP_ERROR_PREFIX)) {
+            const message = result.slice(NATIVE_ZIP_ERROR_PREFIX.length).trim();
+            throw new Error(message.length > 0 ? message : 'Native zip error');
+        }
+        return result;
+    });
+
+    /** @type {NativeZipApi} */
+    const wrappedApi = {
+        _nativeZipListEntries: wrap(api._nativeZipListEntries.bind(api)),
+        _nativeZipReadEntryText: wrap(api._nativeZipReadEntryText.bind(api)),
+        _nativeZipReadEntryBase64: wrap(api._nativeZipReadEntryBase64.bind(api)),
+        _nativeZipGetImageSize: wrap(api._nativeZipGetImageSize.bind(api)),
+    };
+    return wrappedApi;
 }
 
 /**
@@ -147,77 +171,263 @@ export class DictionaryImporter {
         ];
         const {termFiles, termMetaFiles, kanjiFiles, kanjiMetaFiles, tagFiles} = Object.fromEntries(this._getArchiveFiles(fileMap, queryDetails));
 
-        // Load data
-        console.log('Loading data');
-        const totalStart = performance.now();
-        this._progressNextStep(termFiles.length + termMetaFiles.length + kanjiFiles.length + kanjiMetaFiles.length + tagFiles.length);
-        console.log('Converting term bank');
-        const termList = await (
-            version === 1 ?
-            this._readFileSequence(termFiles, this._convertTermBankEntryV1.bind(this), dataBankSchemas[0], dictionaryTitle) :
-            this._readFileSequence(termFiles, this._convertTermBankEntryV3.bind(this), dataBankSchemas[0], dictionaryTitle)
-        );
-        console.log('Converting term meta bank');
-        const termMetaList = await this._readFileSequence(termMetaFiles, this._convertTermMetaBankEntry.bind(this), dataBankSchemas[1], dictionaryTitle);
-        console.log('Converting kanji bank');
-        const kanjiList = await (
-            version === 1 ?
-            this._readFileSequence(kanjiFiles, this._convertKanjiBankEntryV1.bind(this), dataBankSchemas[2], dictionaryTitle) :
-            this._readFileSequence(kanjiFiles, this._convertKanjiBankEntryV3.bind(this), dataBankSchemas[2], dictionaryTitle)
-        );
-        console.log('Converting kanji meta bank');
-        const kanjiMetaList = await this._readFileSequence(kanjiMetaFiles, this._convertKanjiMetaBankEntry.bind(this), dataBankSchemas[3], dictionaryTitle);
-        console.log('Converting tag bank');
-        const tagList = await this._readFileSequence(tagFiles, this._convertTagBankEntry.bind(this), dataBankSchemas[4], dictionaryTitle);
-        this._addOldIndexTags(index, tagList, dictionaryTitle);
-        console.log(`Loaded data in ${(performance.now() - totalStart).toFixed(2)}ms`);
-
-        // Prefix wildcard support
+        // We stream-convert and bulk-insert in chunks to avoid retaining huge in-memory arrays
+        // (QuickJS OOMs on large dictionaries when building full term/kanji lists).
         const prefixWildcardsSupported = !!details.prefixWildcardsSupported;
-        if (prefixWildcardsSupported) {
-            for (const entry of termList) {
+
+        /** @type {Error[]} */
+        const errors = [];
+        const maxTransactionLength = 2000;
+
+        /** @type {Map<string, import('dictionary-database').MediaDataArrayBufferContent>} */
+        const media = new Map();
+        /** @type {import('dictionary-importer').ImportRequirementContext} */
+        const eagerContext = {fileMap, media};
+
+        /** @type {Map<string, number>} */
+        const termMetaCountsByMode = new Map();
+        /** @type {Map<string, number>} */
+        const kanjiMetaCountsByMode = new Map();
+        let termCount = 0;
+        let kanjiCount = 0;
+        let tagCount = 0;
+
+        /**
+         * @template {import('dictionary-database').ObjectStoreName} T
+         * @param {T} objectStoreName
+         * @param {import('dictionary-database').ObjectStoreData<T>[]} batch
+         */
+        const bulkAddBatch = async (objectStoreName, batch) => {
+            if (batch.length === 0) { return; }
+            try {
+                await dictionaryDatabase.bulkAdd(objectStoreName, batch, 0, batch.length);
+            } catch (e) {
+                errors.push(toError(e));
+            }
+        };
+
+        /**
+         * @param {import('dictionary-importer').CompiledSchemaName} schemaName
+         * @param {string} fileName
+         * @returns {unknown}
+         */
+        const readAndParseJsonFile = (schemaName, fileName) => {
+            let contentText = getNativeZip()._nativeZipReadEntryText(this._archiveUri, fileName);
+            let parsed;
+            try {
+                parsed = parseJson(contentText);
+            } catch (error) {
+                if (error instanceof Error) {
+                    throw new Error(error.message + ` in '${fileName}'`);
+                }
+                throw error;
+            } finally {
+                // Reduce peak live memory.
+                contentText = '';
+            }
+
+            const schema = ajvSchemas[schemaName];
+            if (!schema(parsed)) {
+                throw this._formatAjvSchemaError(schema, fileName);
+            }
+            return parsed;
+        };
+
+        /**
+         * @param {import('dictionary-database').DatabaseTermEntry} entry
+         */
+        const finalizeTermEntry = async (entry) => {
+            if (prefixWildcardsSupported) {
                 entry.expressionReverse = stringReverse(entry.expression);
                 entry.readingReverse = stringReverse(entry.reading);
             }
-        }
 
-        // Extended data support
-        this._progressNextStep(termList.length);
-        const formatProgressInterval = 1000;
-        /** @type {import('dictionary-importer').ImportRequirement[]} */
-        const requirements = [];
-        for (let i = 0, ii = termList.length; i < ii; ++i) {
-            const entry = termList[i];
             const glossaryList = entry.glossary;
             for (let j = 0, jj = glossaryList.length; j < jj; ++j) {
                 const glossary = glossaryList[j];
                 if (typeof glossary !== 'object' || glossary === null || Array.isArray(glossary)) { continue; }
-                glossaryList[j] = this._formatDictionaryTermGlossaryObject(glossary, entry, requirements);
+                glossaryList[j] = await this._formatDictionaryTermGlossaryObjectEager(eagerContext, glossary, entry);
             }
-            if ((i % formatProgressInterval) === 0) {
-                this._progressData.index = i;
+        };
+
+        // Load data (streamed)
+        console.log('Loading data');
+        const totalStart = performance.now();
+        this._progressNextStep(termFiles.length + termMetaFiles.length + kanjiFiles.length + kanjiMetaFiles.length + tagFiles.length);
+
+        console.log('Importing term bank');
+        {
+            /** @type {import('dictionary-database').DatabaseTermEntry[]} */
+            let batch = [];
+            for (const file of termFiles) {
+                const fileName = file.filename;
+                const parsed = readAndParseJsonFile(dataBankSchemas[0], fileName);
+                this._progressData.index += 1;
                 this._progress();
+
+                if (!Array.isArray(parsed)) { continue; }
+                const entries = /** @type {import('dictionary-data').TermV1[]|import('dictionary-data').TermV3[]} */ (parsed);
+                const convert =
+                    version === 1 ?
+                    this._convertTermBankEntryV1.bind(this) :
+                    this._convertTermBankEntryV3.bind(this);
+
+                for (let i = 0, ii = entries.length; i < ii; ++i) {
+                    const raw = entries[i];
+                    // Help GC: drop references to processed raw entries.
+                    entries[i] = /** @type {any} */ (null);
+                    const entry = convert(raw, dictionaryTitle);
+                    await finalizeTermEntry(entry);
+                    batch.push(entry);
+                    ++termCount;
+                    if (batch.length >= maxTransactionLength) {
+                        await bulkAddBatch('terms', batch);
+                        batch = [];
+                    }
+                }
             }
+            await bulkAddBatch('terms', batch);
         }
-        this._progress();
 
-        // Async requirements
-        console.log('Resolving async requirements');
-        this._progressNextStep(requirements.length);
-        const {media} = await this._resolveAsyncRequirements(requirements, fileMap);
+        console.log('Importing term meta bank');
+        {
+            /** @type {import('dictionary-database').DatabaseTermMeta[]} */
+            let batch = [];
+            for (const file of termMetaFiles) {
+                const fileName = file.filename;
+                const parsed = readAndParseJsonFile(dataBankSchemas[1], fileName);
+                this._progressData.index += 1;
+                this._progress();
 
-        // Add dictionary descriptor
-        console.log('Adding dictionary descriptor');
-        this._progressNextStep(termList.length + termMetaList.length + kanjiList.length + kanjiMetaList.length + tagList.length + media.length);
+                if (!Array.isArray(parsed)) { continue; }
+                const entries = /** @type {import('dictionary-data').TermMeta[]} */ (parsed);
+                for (let i = 0, ii = entries.length; i < ii; ++i) {
+                    const raw = entries[i];
+                    entries[i] = /** @type {any} */ (null);
+                    const entry = this._convertTermMetaBankEntry(raw, dictionaryTitle);
+                    batch.push(entry);
+                    const mode = entry.mode;
+                    termMetaCountsByMode.set(mode, (termMetaCountsByMode.get(mode) ?? 0) + 1);
+                    if (batch.length >= maxTransactionLength) {
+                        await bulkAddBatch('termMeta', batch);
+                        batch = [];
+                    }
+                }
+            }
+            await bulkAddBatch('termMeta', batch);
+        }
+
+        console.log('Importing kanji bank');
+        {
+            /** @type {import('dictionary-database').DatabaseKanjiEntry[]} */
+            let batch = [];
+            for (const file of kanjiFiles) {
+                const fileName = file.filename;
+                const parsed = readAndParseJsonFile(dataBankSchemas[2], fileName);
+                this._progressData.index += 1;
+                this._progress();
+
+                if (!Array.isArray(parsed)) { continue; }
+                const entries = /** @type {import('dictionary-data').KanjiV1[]|import('dictionary-data').KanjiV3[]} */ (parsed);
+                const convert =
+                    version === 1 ?
+                    this._convertKanjiBankEntryV1.bind(this) :
+                    this._convertKanjiBankEntryV3.bind(this);
+                for (let i = 0, ii = entries.length; i < ii; ++i) {
+                    const raw = entries[i];
+                    entries[i] = /** @type {any} */ (null);
+                    batch.push(convert(raw, dictionaryTitle));
+                    ++kanjiCount;
+                    if (batch.length >= maxTransactionLength) {
+                        await bulkAddBatch('kanji', batch);
+                        batch = [];
+                    }
+                }
+            }
+            await bulkAddBatch('kanji', batch);
+        }
+
+        console.log('Importing kanji meta bank');
+        {
+            /** @type {import('dictionary-database').DatabaseKanjiMeta[]} */
+            let batch = [];
+            for (const file of kanjiMetaFiles) {
+                const fileName = file.filename;
+                const parsed = readAndParseJsonFile(dataBankSchemas[3], fileName);
+                this._progressData.index += 1;
+                this._progress();
+
+                if (!Array.isArray(parsed)) { continue; }
+                const entries = /** @type {import('dictionary-data').KanjiMeta[]} */ (parsed);
+                for (let i = 0, ii = entries.length; i < ii; ++i) {
+                    const raw = entries[i];
+                    entries[i] = /** @type {any} */ (null);
+                    const entry = this._convertKanjiMetaBankEntry(raw, dictionaryTitle);
+                    batch.push(entry);
+                    const mode = entry.mode;
+                    kanjiMetaCountsByMode.set(mode, (kanjiMetaCountsByMode.get(mode) ?? 0) + 1);
+                    if (batch.length >= maxTransactionLength) {
+                        await bulkAddBatch('kanjiMeta', batch);
+                        batch = [];
+                    }
+                }
+            }
+            await bulkAddBatch('kanjiMeta', batch);
+        }
+
+        console.log('Importing tag bank');
+        {
+            /** @type {import('dictionary-database').Tag[]} */
+            let batch = [];
+            for (const file of tagFiles) {
+                const fileName = file.filename;
+                const parsed = readAndParseJsonFile(dataBankSchemas[4], fileName);
+                this._progressData.index += 1;
+                this._progress();
+
+                if (!Array.isArray(parsed)) { continue; }
+                const entries = /** @type {import('dictionary-data').Tag[]} */ (parsed);
+                for (let i = 0, ii = entries.length; i < ii; ++i) {
+                    const raw = entries[i];
+                    entries[i] = /** @type {any} */ (null);
+                    batch.push(this._convertTagBankEntry(raw, dictionaryTitle));
+                    ++tagCount;
+                    if (batch.length >= maxTransactionLength) {
+                        await bulkAddBatch('tagMeta', batch);
+                        batch = [];
+                    }
+                }
+            }
+
+            // Old index format tags are stored in index.tagMeta (object).
+            const {tagMeta} = index;
+            if (typeof tagMeta === 'object' && tagMeta !== null) {
+                for (const [name, value] of Object.entries(tagMeta)) {
+                    const {category, order, notes, score} = value;
+                    batch.push({name, category, order, notes, score, dictionary: dictionaryTitle});
+                    ++tagCount;
+                    if (batch.length >= maxTransactionLength) {
+                        await bulkAddBatch('tagMeta', batch);
+                        batch = [];
+                    }
+                }
+            }
+
+            await bulkAddBatch('tagMeta', batch);
+        }
+
+        // Media collected during eager glossary formatting.
+        const mediaList = [...media.values()];
+        console.log(`Loaded data in ${(performance.now() - totalStart).toFixed(2)}ms`);
 
         /** @type {import('dictionary-importer').SummaryCounts} */
         const counts = {
-            terms: {total: termList.length},
-            termMeta: this._getMetaCounts(termMetaList),
-            kanji: {total: kanjiList.length},
-            kanjiMeta: this._getMetaCounts(kanjiMetaList),
-            tagMeta: {total: tagList.length},
-            media: {total: media.length},
+            terms: {total: termCount},
+            termMeta: this._getMetaCountsFromMap(termMetaCountsByMode),
+            kanji: {total: kanjiCount},
+            kanjiMeta: this._getMetaCountsFromMap(kanjiMetaCountsByMode),
+            tagMeta: {total: tagCount},
+            media: {total: mediaList.length},
         };
 
         const stylesFileName = 'styles.css';
@@ -241,44 +451,19 @@ export class DictionaryImporter {
         const summary = this._createSummary(dictionaryTitle, version, index, summaryDetails);
         await dictionaryDatabase.bulkAdd('dictionaries', [summary], 0, 1);
 
-        // Add data
-        console.log('Adding data');
-        /** @type {Error[]} */
-        const errors = [];
-        // const maxTransactionLength = 1000;
-        const maxTransactionLength = 10000;
-
-        /**
-         * @template {import('dictionary-database').ObjectStoreName} T
-         * @param {T} objectStoreName
-         * @param {import('dictionary-database').ObjectStoreData<T>[]} entries
-         */
-        const bulkAdd = async (objectStoreName, entries) => {
-            const ii = entries.length;
-            console.log('Total entries to add: ' + ii);
-            for (let i = 0; i < ii; i += maxTransactionLength) {
-                const count = Math.min(maxTransactionLength, ii - i);
-
-                try {
-                    await dictionaryDatabase.bulkAdd(objectStoreName, entries, i, count);
-                } catch (e) {
-                    errors.push(toError(e));
-                }
-
-                console.log('Entries left to add: ' + (ii - i));
-                this._progressData.index += count;
-                this._progress();
+        // Add media last (usually far smaller than term data; already deduped).
+        console.log('Adding media');
+        this._progressNextStep(mediaList.length);
+        for (let i = 0, ii = mediaList.length; i < ii; i += maxTransactionLength) {
+            const count = Math.min(maxTransactionLength, ii - i);
+            try {
+                await dictionaryDatabase.bulkAdd('media', mediaList, i, count);
+            } catch (e) {
+                errors.push(toError(e));
             }
-        };
-
-        await bulkAdd('terms', termList);
-        await bulkAdd('termMeta', termMetaList);
-        await bulkAdd('kanji', kanjiList);
-        await bulkAdd('kanjiMeta', kanjiMetaList);
-        await bulkAdd('tagMeta', tagList);
-        await bulkAdd('media', media);
-
-        this._progress();
+            this._progressData.index = i + count;
+            this._progress();
+        }
 
         return {result: summary, errors};
       } catch (e) {
@@ -1007,6 +1192,95 @@ export class DictionaryImporter {
             }
         }
         return results;
+    }
+
+    /**
+     * @param {Map<string, number>} countsByMode
+     * @returns {import('dictionary-importer').SummaryMetaCount}
+     */
+    _getMetaCountsFromMap(countsByMode) {
+        /** @type {import('dictionary-importer').SummaryMetaCount} */
+        const counts = {total: 0};
+        for (const [mode, count] of countsByMode.entries()) {
+            counts.total += count;
+            if (!Object.prototype.hasOwnProperty.call(counts, mode)) {
+                counts[mode] = count;
+            }
+        }
+        return counts;
+    }
+
+    /**
+     * Eager version of glossary formatting that resolves media immediately and returns
+     * a fully populated glossary value (no deferred requirements list).
+     * @param {import('dictionary-importer').ImportRequirementContext} context
+     * @param {import('dictionary-data').TermGlossaryImage|import('dictionary-data').TermGlossaryStructuredContent} data
+     * @param {import('dictionary-database').DatabaseTermEntry} entry
+     * @returns {Promise<import('dictionary-data').TermGlossary>}
+     */
+    async _formatDictionaryTermGlossaryObjectEager(context, data, entry) {
+        switch (data.type) {
+            case 'text':
+                return data.text;
+            case 'image':
+                {
+                    /** @type {import('dictionary-data').TermGlossaryImage} */
+                    const target = {type: 'image', path: ''};
+                    await this._createImageData(context, target, data, entry);
+                    return target;
+                }
+            case 'structured-content':
+                {
+                    const content = await this._prepareStructuredContentEager(context, data.content, entry);
+                    return {type: 'structured-content', content};
+                }
+            default:
+                throw new Error(`Unhandled data type: ${/** @type {import('core').SerializableObject} */ (data).type}`);
+        }
+    }
+
+    /**
+     * @param {import('dictionary-importer').ImportRequirementContext} context
+     * @param {import('structured-content').Content} content
+     * @param {import('dictionary-database').DatabaseTermEntry} entry
+     * @returns {Promise<import('structured-content').Content>}
+     */
+    async _prepareStructuredContentEager(context, content, entry) {
+        if (typeof content === 'string' || !(typeof content === 'object' && content !== null)) {
+            return content;
+        }
+        if (Array.isArray(content)) {
+            for (let i = 0, ii = content.length; i < ii; ++i) {
+                content[i] = await this._prepareStructuredContentEager(context, content[i], entry);
+            }
+            return content;
+        }
+
+        const tag = /** @type {import('structured-content').Element} */ (content).tag;
+        if (tag === 'img') {
+            const source = /** @type {import('structured-content').ImageElement} */ (content);
+            /** @type {import('structured-content').ImageElement} */
+            const target = {tag: 'img', path: ''};
+            const {
+                verticalAlign,
+                border,
+                borderRadius,
+                sizeUnits,
+            } = source;
+            await this._createImageData(context, target, source, entry);
+            if (typeof verticalAlign === 'string') { target.verticalAlign = verticalAlign; }
+            if (typeof border === 'string') { target.border = border; }
+            if (typeof borderRadius === 'string') { target.borderRadius = borderRadius; }
+            if (typeof sizeUnits === 'string') { target.sizeUnits = sizeUnits; }
+            return target;
+        }
+
+        const childContent = /** @type {import('structured-content').Element} */ (content).content;
+        if (typeof childContent !== 'undefined') {
+            /** @type {import('structured-content').Element} */ (content).content =
+                await this._prepareStructuredContentEager(context, childContent, entry);
+        }
+        return content;
     }
 
     /**

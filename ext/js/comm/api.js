@@ -431,10 +431,12 @@ export class API {
     _invoke(action, params) {
         /** @type {import('api').ApiMessage<TAction>} */
         const data = {action, params};
+        // console.log('API: Sending message', action, params);
         return new Promise((resolve, reject) => {
             try {
                 this._webExtension.sendMessage(data, (response) => {
                     this._webExtension.getLastError();
+                    // console.log('API: Received response for', action, response);
                     if (response !== null && typeof response === 'object') {
                         const {error} = /** @type {import('core').UnknownObject} */ (response);
                         if (typeof error !== 'undefined') {

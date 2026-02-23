@@ -44,25 +44,44 @@ export class ExtensionError extends Error {
     static serialize(error) {
         try {
             if (typeof error === 'object' && error !== null) {
-                const {name, message, stack} = /** @type {import('core').SerializableObject} */ (error);
+                // Avoid destructuring/property reads that can throw when `error` is a host object
+                // coming from native (QuickJS), which otherwise degrades into `[unsupported type]`.
                 /** @type {import('core').SerializedError1} */
-                const result = {
-                    name: typeof name === 'string' ? name : '',
-                    message: typeof message === 'string' ? message : '',
-                    stack: typeof stack === 'string' ? stack : '',
-                };
+                const result = {name: '', message: '', stack: ''};
+
+                try {
+                    const name = /** @type {import('core').SerializableObject} */ (error).name;
+                    if (typeof name === 'string') { result.name = name; }
+                } catch (e) { /* NOP */ }
+
+                try {
+                    const message = /** @type {import('core').SerializableObject} */ (error).message;
+                    if (typeof message === 'string') { result.message = message; }
+                } catch (e) { /* NOP */ }
+
+                try {
+                    const stack = /** @type {import('core').SerializableObject} */ (error).stack;
+                    if (typeof stack === 'string') { result.stack = stack; }
+                } catch (e) { /* NOP */ }
+
                 if (error instanceof ExtensionError) {
-                    result.data = error.data;
+                    try {
+                        result.data = error.data;
+                    } catch (e) { /* NOP */ }
                 }
+
                 return result;
             }
         } catch (e) {
             // NOP
         }
-        return /** @type {import('core').SerializedError2} */ ({
-            value: error,
-            hasValue: true,
-        });
+        let value;
+        try {
+            value = String(error);
+        } catch (e) {
+            value = '[unsupported type]';
+        }
+        return /** @type {import('core').SerializedError2} */ ({value, hasValue: true});
     }
 
     /**
@@ -72,8 +91,11 @@ export class ExtensionError extends Error {
      */
     static deserialize(serializedError) {
         if (serializedError.hasValue) {
-            const {value} = serializedError;
-            return new ExtensionError(`Error of type ${typeof value}: ${value}`);
+            // Use `var` (not `const`/`let`) to avoid temporal-dead-zone related
+            // ReferenceErrors observed in some QuickJS builds.
+            // eslint-disable-next-line no-var
+            var errorValue = /** @type {import('core').SerializedError2} */ (serializedError).value;
+            return new ExtensionError(`Error of type ${typeof errorValue}: ${String(errorValue)}`);
         }
         const {message, name, stack, data} = serializedError;
         const error = new ExtensionError(message);

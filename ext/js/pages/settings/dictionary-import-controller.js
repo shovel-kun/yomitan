@@ -419,10 +419,12 @@ export class DictionaryImportController {
           const params = {};
           return await new Promise((resolve, reject) => {
               chrome.runtime.sendMessage({ action: 'nativePickDocuments', params }, (response) => { 
-                  if (response.length === 0) {
+                  const result = response && typeof response === 'object' ? response.result : null;
+                  if (!Array.isArray(result) || result.length === 0) {
                       reject(new Error('No documents selected'));
+                      return;
                   }
-                  const files = response.map(fileAndUri => ({
+                  const files = result.map((fileAndUri) => ({
                     file: new File([], fileAndUri.name, {
                       type: fileAndUri.type,
                       lastModified: Date.now()
@@ -484,14 +486,16 @@ export class DictionaryImportController {
               const params = {url};
               return await new Promise((resolve, reject) => {
                   chrome.runtime.sendMessage({ action: 'nativeDownloadRecommendedDicts', params }, (response) => { 
-                      if (!response) {
+                      const result = response && typeof response === 'object' ? response.result : null;
+                      if (!result) {
                           reject(new Error('Failed to download recommended dictionaries'));
+                          return;
                       }
                       const fileAndUri = {
-                        file: new File([], response.name, {
-                          type: response.type,
+                        file: new File([], result.name, {
+                          type: result.type,
                         }),
-                        uri: response.uri
+                        uri: result.uri
                       };
                       resolve(fileAndUri);
                   })
@@ -654,9 +658,15 @@ export class DictionaryImportController {
         async function nativeImportDictionary() {
             const params = {uri: file.uri, importDetails, onProgress};
             return await new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage({ action: 'nativeImportDictionary', params }, (response) => {
+                chrome.runtime.sendMessage({action: 'nativeImportDictionary', params}, (response) => {
+                    // Chrome-style messaging sets runtime.lastError on failure and may pass undefined/null response.
+                    const lastError = chrome.runtime.lastError;
+                    if (lastError) {
+                        reject(new Error(lastError.message || String(lastError)));
+                        return;
+                    }
                     resolve(response);
-                })
+                });
             });
         }
 
@@ -669,9 +679,30 @@ export class DictionaryImportController {
         }
 
         chrome.runtime.onMessage.addListener(_onMessage);
-        const {result, errors: serializedErrors} = await nativeImportDictionary();
-        const errors = serializedErrors.map((error) => ExtensionError.deserialize(error));
-        chrome.runtime.onMessage.removeListener(_onMessage);
+        /** @type {Error[]} */
+        let errors = [];
+        /** @type {import('dictionary-worker').MessageCompleteResultSerialized['result']} */
+        let result = null;
+        try {
+            // API handler responses are wrapped as `{result}` or `{error}` by invokeApiMapHandler.
+            const response = /** @type {import('core').Response<import('dictionary-worker').MessageCompleteResultSerialized>} */ (
+                await nativeImportDictionary()
+            );
+
+            if (response && typeof response === 'object' && typeof response.error !== 'undefined') {
+                errors = [ExtensionError.deserialize(response.error)];
+                return errors;
+            }
+
+            const payload = response && typeof response === 'object' ? response.result : null;
+            const serializedErrors = payload && typeof payload === 'object' ? payload.errors : void 0;
+            result = payload && typeof payload === 'object' ? payload.result : null;
+            if (Array.isArray(serializedErrors)) {
+                errors = serializedErrors.map((error) => ExtensionError.deserialize(error));
+            }
+        } finally {
+            chrome.runtime.onMessage.removeListener(_onMessage);
+        }
 
         if (!result) {
             return errors;

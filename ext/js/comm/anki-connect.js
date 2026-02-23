@@ -439,13 +439,16 @@ export class AnkiConnect {
         if (this._apiKey !== null) { body.key = this._apiKey; }
         let response;
 
+        const server = this._server;
+
         /** @returns {Promise<Response>} */
         async function nativeFetch() {
-          const params = { body };
+          const params = { body, server };
           const awaitedPromise = await new Promise((resolve, reject) => {
               chrome.runtime.sendMessage({ action: 'nativeAnkiConnect', params }, (response) => { resolve(response); })
           });
-          return parseJson(awaitedPromise);
+          const result = awaitedPromise && typeof awaitedPromise === 'object' ? awaitedPromise.result : awaitedPromise;
+          return typeof result === 'string' ? parseJson(result) : result;
         }
 
         try {
@@ -489,8 +492,8 @@ export class AnkiConnect {
         let result;
         try {
             // Handle fake fetch response differently
-            if (response.data) {
-                responseText = response.data;
+            if (typeof response === 'object' && response !== null && Object.prototype.hasOwnProperty.call(response, 'data')) {
+                responseText = /** @type {{data?: unknown}} */ (response).data ?? null;
                 result = responseText;
             } else {
                 responseText = await response.text();

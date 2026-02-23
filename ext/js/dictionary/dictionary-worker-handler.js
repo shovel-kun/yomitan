@@ -21,6 +21,8 @@ import {DictionaryDatabase} from './dictionary-database.js';
 import {DictionaryImporter} from './dictionary-importer.js';
 import {DictionaryWorkerMediaLoader} from './dictionary-worker-media-loader.js';
 
+const NATIVE_DICTIONARY_IMPORT_ERROR_PREFIX = '__NATIVE_DICTIONARY_IMPORT_ERROR__:';
+
 export class DictionaryWorkerHandler {
     constructor() {
         /** @type {DictionaryWorkerMediaLoader} */
@@ -141,6 +143,21 @@ export class DictionaryWorkerHandler {
      * @returns {Promise<import('dictionary-worker').MessageCompleteResultSerialized>}
      */
     async _importDictionary({details, archiveContent}, onProgress) {
+        // Prefer native Kotlin importer when running in the embedded QuickJS backend.
+        if (typeof globalThis._nativeDictionaryImport === 'function') {
+            const text = globalThis._nativeDictionaryImport(String(archiveContent), JSON.stringify(details));
+            if (typeof text === 'string' && text.startsWith(NATIVE_DICTIONARY_IMPORT_ERROR_PREFIX)) {
+                throw new Error(text.slice(NATIVE_DICTIONARY_IMPORT_ERROR_PREFIX.length).trim());
+            }
+            const payload = (typeof text === 'string' && text.length > 0) ? JSON.parse(text) : null;
+            const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+            const result = payload?.result ?? null;
+            return {
+                result,
+                errors: errors.map((message) => ExtensionError.serialize(new Error(String(message)))),
+            };
+        }
+
         const dictionaryDatabase = await this._getPreparedDictionaryDatabase();
         try {
             const dictionaryImporter = new DictionaryImporter(this._mediaLoader, onProgress);

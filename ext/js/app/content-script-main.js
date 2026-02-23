@@ -67,6 +67,7 @@ const callbackMap = new Map();
 window.onNativeMessage = function(message) {
     try {
         message = JSON.parse(decodeURI(message));
+        // console.log('content-script: Received native message', message);
     } catch (error) {
         console.error('Failed to parse message from native environment:', error);
         return;
@@ -75,12 +76,15 @@ window.onNativeMessage = function(message) {
     if (message.messageId !== undefined && message.messageId !== null && message.response) {
         const callback = callbackMap.get(message.messageId);
         if (callback) {
+            // console.log('content-script: Calling callback for messageId', message.messageId);
             callback(message.response);
             callbackMap.delete(message.messageId);
         }
     } else if (message.sender) {
+        // console.log('content-script: Sending message with sender', message);
         chrome.runtime.sendMessageWithSender(message.message, message.sender.id);
     } else {
+        // console.log('content-script: Sending message without sender', message);
         chrome.runtime.sendMessage(message);
     }
 };
@@ -88,6 +92,7 @@ window.onNativeMessage = function(message) {
 // Listens to all messages and decides whether to forward them to native.
 chrome.runtime.onMessage.addListener(function (message, sender, callback) {
   if (sender.id === globalThis.senderContext) {
+    // console.log('content-script: Posting message to native', message);
     postMessageToNative(message, sender);
 
     if (message.params && message.params.messageId !== undefined) {
