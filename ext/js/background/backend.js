@@ -249,6 +249,7 @@ export class Backend {
         }
 
         const onMessage = this._onMessageWrapper.bind(this);
+        console.log('backend: Adding listener for onMessage');
         chrome.runtime.onMessage.addListener(onMessage);
 
         // On Chrome, this is for receiving messages sent with navigator.serviceWorker, which has the benefit of being able to transfer objects, but doesn't accept callbacks
@@ -317,18 +318,25 @@ export class Backend {
             // Above commented out because we will always use Chrome
 
             try {
+                console.log('backend: Preparing dictionary database');
                 await this._dictionaryDatabase.prepare();
+                console.log('backend: Dictionary database prepared');
             } catch (e) {
                 log.error(e);
             }
 
             void this._translator.prepare();
 
+            console.log('backend: Preparing options');
             await this._optionsUtil.prepare();
+            console.log('backend: Options prepared');
             this._defaultAnkiFieldTemplates = (await fetchText('/data/templates/default-anki-field-templates.handlebars')).trim();
             this._options = await this._optionsUtil.load();
+            console.log('backend: Options loaded');
 
+            console.log('backend: Applying options');
             this._applyOptions('background');
+            console.log('backend: Options applied');
 
             // TODO: 'The omnibox API allows you to register a keyword with Google Chrome's address bar, which is also known as the omnibox'
             // So basically we don't need this.
@@ -341,8 +349,10 @@ export class Backend {
 
             this._clipboardMonitor.on('change', this._onClipboardTextChange.bind(this));
 
+            console.log('backend: Sending applicationBackendReady');
             this._sendMessageAllTabsIgnoreResponse({action: 'applicationBackendReady'});
             this._sendMessageIgnoreResponse({action: 'applicationBackendReady'});
+            console.log('backend: applicationBackendReady sent');
         } catch (e) {
             log.error(e);
             throw e;
@@ -425,13 +435,22 @@ export class Backend {
 
     /** @type {import('extension').ChromeRuntimeOnMessageCallback<import('api').ApiMessageAny>} */
     _onMessageWrapper(message, sender, sendResponse) {
+        console.log('backend: On message wrapper', JSON.stringify(message));
+
         if (this._isPrepared) {
+            console.log('backend: Calling onMessage');
             return this._onMessage(message, sender, sendResponse);
         }
 
         this._prepareCompletePromise.then(
-            () => { this._onMessage(message, sender, sendResponse); },
-            () => { sendResponse(); },
+            () => {
+                console.log('backend: Calling onMessage in a promise');
+                this._onMessage(message, sender, sendResponse);
+            },
+            () => {
+                console.log('backend: Sending response');
+                sendResponse();
+            },
         );
         return true;
     }
@@ -452,6 +471,7 @@ export class Backend {
      * @returns {boolean}
      */
     _onMessage({action, params}, sender, callback) {
+        console.log('backend: Invoking handler for', action);
         return invokeApiMapHandler(this._apiMap, action, params, [sender], callback);
     }
 

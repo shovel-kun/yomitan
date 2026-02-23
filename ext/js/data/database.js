@@ -27,6 +27,8 @@
  * }} NativeSqliteApi
  */
 
+const NATIVE_SQLITE_ERROR_PREFIX = '__NATIVE_SQLITE_ERROR__:';
+
 /**
  * @returns {NativeSqliteApi}
  */
@@ -505,6 +507,10 @@ export class Database {
         if (this._handle === null) throw new Error('Database not open');
         if (this._native === null) this._native = getNative();
         const text = this._native._nativeSqliteExecute(this._handle, sql, encodeParams(params));
+        if (typeof text === 'string' && text.startsWith(NATIVE_SQLITE_ERROR_PREFIX)) {
+            const message = text.slice(NATIVE_SQLITE_ERROR_PREFIX.length).trim();
+            throw new Error(message.length > 0 ? message : 'SQLite execute failed');
+        }
         return safeJsonParse(text, {rows: []});
     }
 
@@ -518,7 +524,8 @@ export class Database {
         if (this._native === null) this._native = getNative();
         const error = this._native._nativeSqliteExecuteRaw(this._handle, sql, encodeParams(params));
         if (typeof error === 'string' && error.length > 0) {
-            throw new Error(error);
+            const message = error.startsWith(NATIVE_SQLITE_ERROR_PREFIX) ? error.slice(NATIVE_SQLITE_ERROR_PREFIX.length).trim() : error;
+            throw new Error(message.length > 0 ? message : 'SQLite executeRaw failed');
         }
     }
 }

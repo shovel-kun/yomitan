@@ -202,9 +202,11 @@ export class DictionaryDatabase {
         if (this._db.isOpening()) {
             throw new Error('Cannot purge database while opening');
         }
-        // if (this._db.isOpen()) {
-        //     this._db.close();
-        // }
+        if (this._db.isOpen()) {
+            // If the database stays open, the subsequent `prepare()` will attempt to `open()`
+            // again and throw "Database already open".
+            this._db.close();
+        }
         // if (this._worker !== null) {
         //     this._worker.terminate();
         //     this._worker = null;

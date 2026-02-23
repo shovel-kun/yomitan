@@ -325,6 +325,7 @@ chrome = {
                 (response) => {
                     const registeredCallback = callbackRegistry[modifiedMessage.params.messageId];
                     if (registeredCallback) {
+                        // console.log('chrome-mock: Response is:', JSON.stringify(response));
                         registeredCallback(response);
                         delete callbackRegistry[modifiedMessage.params.messageId];
                     }
@@ -372,6 +373,7 @@ chrome = {
                 (response) => {
                     const registeredCallback = callbackRegistry[modifiedMessage.params.messageId];
                     if (registeredCallback) {
+                        // console.log('chrome-mock: Response is:', JSON.stringify(response));
                         registeredCallback(response);
                         delete callbackRegistry[modifiedMessage.params.messageId];
                     }
