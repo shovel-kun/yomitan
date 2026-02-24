@@ -415,7 +415,7 @@ export type PitchAccent = {
     /**
      * Position of the downstep, as a number of mora.
      */
-    position: number;
+    positions: number | string;
     /**
      * Positions of morae with a nasal sound.
      */
@@ -531,28 +531,4 @@ export type TermSource = {
      * original search text, while non-primary sources originate from related terms.
      */
     isPrimary: boolean;
-};
-
-/**
- * Dictionaries containing the harmonic mean frequency of specific term-reading pairs.
- */
-export type AverageFrequencyListGroup = Map<string, AverageFrequencyListTerm>;
-
-/**
- * Contains the average frequency of a term, with all its readings.
- */
-export type AverageFrequencyListTerm = Map<string, AverageFrequencyListReading>;
-
-/**
- * The number of dictionary frequencies used to compute the average.
- */
-export type AverageFrequencyListReading = {
-    /**
-     * The current average frequency.
-     */
-    currentAvg: number;
-    /**
-     * The number of dictionary frequencies used to compute the average.
-     */
-    count: number;
 };

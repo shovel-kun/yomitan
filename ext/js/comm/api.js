@@ -347,6 +347,14 @@ export class API {
     }
 
     /**
+     * @param {string} url
+     * @returns {Promise<import('api').ApiReturn<'testYomitanApi'>>}
+     */
+    testYomitanApi(url) {
+        return this._invoke('testYomitanApi', {url});
+    }
+
+    /**
      * @param {import('api').ApiParam<'isTextLookupWorthy', 'text'>} text
      * @param {import('api').ApiParam<'isTextLookupWorthy', 'language'>} language
      * @returns {Promise<import('api').ApiReturn<'isTextLookupWorthy'>>}
@@ -417,6 +425,13 @@ export class API {
      */
     getLanguageSummaries() {
         return this._invoke('getLanguageSummaries', void 0);
+    }
+
+    /**
+     * @returns {Promise<import('api').ApiReturn<'forceSync'>>}
+     */
+    forceSync() {
+        return this._invoke('forceSync', void 0);
     }
 
     // Utilities

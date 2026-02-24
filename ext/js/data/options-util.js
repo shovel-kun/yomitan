@@ -346,7 +346,7 @@ export class OptionsUtil {
                 length: 10,
                 modifier: 'shift',
                 deepDomScan: false,
-                popupNestingMaxDepth: 0,
+                popupNestingMaxDepth: 10,
                 enablePopupSearch: false,
                 enableOnPopupExpressions: false,
                 enableOnSearchPage: true,
@@ -576,6 +576,16 @@ export class OptionsUtil {
             this._updateVersion62,
             this._updateVersion63,
             this._updateVersion64,
+            this._updateVersion65,
+            this._updateVersion66,
+            this._updateVersion67,
+            this._updateVersion68,
+            this._updateVersion69,
+            this._updateVersion70,
+            this._updateVersion71,
+            this._updateVersion72,
+            this._updateVersion73,
+            this._updateVersion74,
         ];
         /* eslint-enable @typescript-eslint/unbound-method */
         if (typeof targetVersion === 'number' && targetVersion < result.length) {
@@ -657,6 +667,14 @@ export class OptionsUtil {
             profileOptions.scanning.hideDelay = 0;
             profileOptions.scanning.pointerEventsEnabled = false;
             profileOptions.scanning.preventMiddleMouse = {
+                onTextHover: false,
+                onWebPages: false,
+                onPopupPages: false,
+                onSearchPages: false,
+                onSearchQuery: false,
+            };
+            profileOptions.scanning.preventBackForward = {
+                onTextHover: false,
                 onWebPages: false,
                 onPopupPages: false,
                 onSearchPages: false,
@@ -1721,6 +1739,96 @@ export class OptionsUtil {
                 }
             }
         }
+    }
+
+    /**
+     *  - Added general.enableYomitanApi
+     *  - Added general.yomitanApiServer
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion65(options) {
+        for (const profile of options.profiles) {
+            profile.options.general.enableYomitanApi = false;
+            profile.options.general.yomitanApiServer = 'http://127.0.0.1:8766';
+        }
+    }
+
+    /**
+     *  - Added glossary-plain handlebars
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion66(options) {
+        await this._applyAnkiFieldTemplatesPatch(options, '/data/templates/anki-field-templates-upgrade-v66.handlebars');
+    }
+
+    /**
+     * - Added dynamic handlebars for single frequency dictionaries.
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion67(options) {
+        await this._applyAnkiFieldTemplatesPatch(options, '/data/templates/anki-field-templates-upgrade-v67.handlebars');
+    }
+
+    /**
+     *  - Changed pitch-accent-item param name
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion68(options) {
+        await this._applyAnkiFieldTemplatesPatch(options, '/data/templates/anki-field-templates-upgrade-v68.handlebars');
+    }
+
+    /**
+     *  - Change default Yomitan API port to 19633
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion69(options) {
+        for (const profile of options.profiles) {
+            profile.options.general.yomitanApiServer = 'http://127.0.0.1:19633';
+        }
+    }
+
+    /**
+     *  - Added audio.enableDefaultAudioSources
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion70(options) {
+        for (const profile of options.profiles) {
+            profile.options.audio.enableDefaultAudioSources = true;
+        }
+    }
+
+    /**
+     *  - Added global.dataTransmissionConsentShown
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion71(options) {
+        options.global.dataTransmissionConsentShown = false;
+    }
+
+    /**
+     *  - Always put dict glosses in a list for the `glossary` handlebar (and brief and no-dictionary)
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion72(options) {
+        await this._applyAnkiFieldTemplatesPatch(options, '/data/templates/anki-field-templates-upgrade-v71.handlebars');
+    }
+
+    /**
+     *  - Added anki.targetTags
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion73(options) {
+        for (const profile of options.profiles) {
+            profile.options.anki.targetTags = [];
+        }
+    }
+
+    /**
+     *  - Fix glossary-plain and glossary-plain-no-dictionary not working when resultOutputMode (Result grouping mode) == split (No grouping)
+     *  @type {import('options-util').UpdateFunction}
+     */
+    async _updateVersion74(options) {
+        await this._applyAnkiFieldTemplatesPatch(options, '/data/templates/anki-field-templates-upgrade-v74.handlebars');
     }
 
     /**

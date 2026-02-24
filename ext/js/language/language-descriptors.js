@@ -29,6 +29,7 @@ import {arabicTransforms} from './ar/arabic-transforms.js';
 import {normalizeRadicalCharacters} from './CJK-util.js';
 import {eszettPreprocessor} from './de/german-text-preprocessors.js';
 import {germanTransforms} from './de/german-transforms.js';
+import {removeDoubleAcuteAccents} from './el/modern-greek-processors.js';
 import {englishTransforms} from './en/english-transforms.js';
 import {esperantoTransforms} from './eo/esperanto-transforms.js';
 import {spanishTransforms} from './es/spanish-transforms.js';
@@ -49,6 +50,7 @@ import {
 } from './ja/japanese-text-preprocessors.js';
 import {japaneseTransforms} from './ja/japanese-transforms.js';
 import {isStringPartiallyJapanese} from './ja/japanese.js';
+import {georgianTransforms} from './ka/georgian-transforms.js';
 import {disassembleHangul, reassembleHangul} from './ko/korean-text-processors.js';
 import {koreanTransforms} from './ko/korean-transforms.js';
 import {processDiphtongs} from './la/latin-text-preprocessors.js';
@@ -113,6 +115,13 @@ const languageDescriptors = [
         languageTransforms: arabicTransforms,
     },
     {
+        iso: 'be',
+        iso639_3: 'bel',
+        name: 'Belarusian',
+        exampleText: 'чытаць',
+        textPreprocessors: capitalizationPreprocessors,
+    },
+    {
         iso: 'bg',
         iso639_3: 'bul',
         name: 'Bulgarian',
@@ -151,7 +160,10 @@ const languageDescriptors = [
         iso639_3: 'ell',
         name: 'Greek',
         exampleText: 'διαβάζω',
-        textPreprocessors: capitalizationPreprocessors,
+        textPreprocessors: {
+            ...capitalizationPreprocessors,
+            removeDoubleAcuteAccents,
+        },
     },
     {
         iso: 'en',
@@ -323,6 +335,13 @@ const languageDescriptors = [
         languageTransforms: japaneseTransforms,
     },
     {
+        iso: 'ka',
+        iso639_3: 'kat',
+        name: 'Georgian',
+        exampleText: 'კითხვა', // Georgian for “read”
+        languageTransforms: georgianTransforms,
+    },
+    {
         iso: 'kn',
         iso639_3: 'kan',
         name: 'Kannada',
@@ -470,6 +489,13 @@ const languageDescriptors = [
         iso639_3: 'tur',
         name: 'Turkish',
         exampleText: 'okumak',
+        textPreprocessors: capitalizationPreprocessors,
+    },
+    {
+        iso: 'tok',
+        iso639_3: 'tok',
+        name: 'Toki Pona',
+        exampleText: 'wile',
         textPreprocessors: capitalizationPreprocessors,
     },
     {
