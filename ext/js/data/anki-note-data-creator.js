@@ -63,7 +63,7 @@ export function createAnkiNoteData(marker, {
         compactTags,
         group: (resultOutputMode === 'group'),
         merge: (resultOutputMode === 'merge'),
-        compactGlossaries: (['compact', 'compact-popup-anki'].includes(glossaryLayoutMode)),
+        compactGlossaries: (glossaryLayoutMode === 'compact-popup-anki'),
         get uniqueExpressions() { return getCachedValue(uniqueExpressions); },
         get uniqueReadings() { return getCachedValue(uniqueReadings); },
         get pitches() { return getCachedValue(pitches); },
@@ -171,29 +171,32 @@ function getPublicContext(context) {
 
 /**
  * @param {import('dictionary').TermDictionaryEntry|import('dictionary').KanjiDictionaryEntry} dictionaryEntry
- * @returns {number[]}
+ * @param {number?} requestedHeadwordIndex
+ * @returns {import('anki-templates').FrequencyNumber[]}
  */
-function getFrequencyNumbers(dictionaryEntry) {
+function getFrequencyNumbers(dictionaryEntry, requestedHeadwordIndex) {
     let previousDictionary;
     const frequencies = [];
-    for (const {dictionary, frequency, displayValue} of dictionaryEntry.frequencies) {
-        if (dictionary === previousDictionary) {
+    for (const dictionaryEntryFrequency of dictionaryEntry.frequencies) {
+        const {dictionary, frequency, displayValue} = dictionaryEntryFrequency;
+        const wrongHeadwordIndex = Number.isInteger(requestedHeadwordIndex) && ('headwordIndex' in dictionaryEntryFrequency) && dictionaryEntryFrequency.headwordIndex !== requestedHeadwordIndex;
+        if (dictionary === previousDictionary || wrongHeadwordIndex) {
             continue;
         }
         previousDictionary = dictionary;
 
         if (displayValue !== null) {
-            const frequencyMatch = displayValue.match(/\d+/);
+            const frequencyMatch = displayValue.match(/^\d+/);
             if (frequencyMatch !== null) {
                 const frequencyParsed = Number.parseInt(frequencyMatch[0], 10);
                 if (frequencyParsed > 0) {
-                    frequencies.push(frequencyParsed);
+                    frequencies.push({dictionary: dictionary, frequency: frequencyParsed});
                     continue;
                 }
             }
         }
         if (frequency > 0) {
-            frequencies.push(frequency);
+            frequencies.push({dictionary: dictionary, frequency: frequency});
         }
     }
     return frequencies;
@@ -201,10 +204,11 @@ function getFrequencyNumbers(dictionaryEntry) {
 
 /**
  * @param {import('dictionary').TermDictionaryEntry|import('dictionary').KanjiDictionaryEntry} dictionaryEntry
+ * @param {number?} headwordIndex
  * @returns {number}
  */
-function getFrequencyHarmonic(dictionaryEntry) {
-    const frequencies = getFrequencyNumbers(dictionaryEntry);
+export function getFrequencyHarmonic(dictionaryEntry, headwordIndex) {
+    const frequencies = getFrequencyNumbers(dictionaryEntry, headwordIndex);
 
     if (frequencies.length === 0) {
         return -1;
@@ -212,17 +216,18 @@ function getFrequencyHarmonic(dictionaryEntry) {
 
     let total = 0;
     for (const frequency of frequencies) {
-        total += 1 / frequency;
+        total += 1 / frequency.frequency;
     }
     return Math.floor(frequencies.length / total);
 }
 
 /**
  * @param {import('dictionary').TermDictionaryEntry|import('dictionary').KanjiDictionaryEntry} dictionaryEntry
+ * @param {number?} headwordIndex
  * @returns {number}
  */
-function getFrequencyAverage(dictionaryEntry) {
-    const frequencies = getFrequencyNumbers(dictionaryEntry);
+function getFrequencyAverage(dictionaryEntry, headwordIndex) {
+    const frequencies = getFrequencyNumbers(dictionaryEntry, headwordIndex);
 
     if (frequencies.length === 0) {
         return -1;
@@ -230,7 +235,7 @@ function getFrequencyAverage(dictionaryEntry) {
 
     let total = 0;
     for (const frequency of frequencies) {
-        total += frequency;
+        total += frequency.frequency;
     }
     return Math.floor(total / frequencies.length);
 }
@@ -249,12 +254,12 @@ function getPitches(dictionaryEntry) {
             for (const groupedPronunciation of pronunciations) {
                 const {pronunciation} = groupedPronunciation;
                 if (pronunciation.type !== 'pitch-accent') { continue; }
-                const {position, nasalPositions, devoicePositions, tags} = pronunciation;
+                const {positions, nasalPositions, devoicePositions, tags} = pronunciation;
                 const {terms, reading, exclusiveTerms, exclusiveReadings} = groupedPronunciation;
                 pitches.push({
                     expressions: terms,
                     reading,
-                    position,
+                    positions,
                     nasalPositions,
                     devoicePositions,
                     tags: convertPitchTags(tags),
@@ -339,8 +344,8 @@ function getKanjiDefinition(dictionaryEntry, context) {
     const stats = createCachedValue(getKanjiStats.bind(null, dictionaryEntry));
     const tags = createCachedValue(convertTags.bind(null, dictionaryEntry.tags));
     const frequencies = createCachedValue(getKanjiFrequencies.bind(null, dictionaryEntry));
-    const frequencyHarmonic = createCachedValue(getFrequencyHarmonic.bind(null, dictionaryEntry));
-    const frequencyAverage = createCachedValue(getFrequencyAverage.bind(null, dictionaryEntry));
+    const frequencyHarmonic = createCachedValue(getFrequencyHarmonic.bind(null, dictionaryEntry, null));
+    const frequencyAverage = createCachedValue(getFrequencyAverage.bind(null, dictionaryEntry, null));
     const cloze = createCachedValue(getCloze.bind(null, dictionaryEntry, context));
 
     return {
@@ -425,6 +430,7 @@ function getTermDefinition(dictionaryEntry, context, resultOutputMode, dictionar
     let type = 'term';
     switch (resultOutputMode) {
         case 'group': type = 'termGrouped'; break;
+        case 'term': type = 'termGrouped'; break;
         case 'merge': type = 'termMerged'; break;
     }
 
@@ -441,8 +447,9 @@ function getTermDefinition(dictionaryEntry, context, resultOutputMode, dictionar
     const termTags = createCachedValue(getTermTags.bind(null, dictionaryEntry, type));
     const expressions = createCachedValue(getTermExpressions.bind(null, dictionaryEntry));
     const frequencies = createCachedValue(getTermFrequencies.bind(null, dictionaryEntry));
-    const frequencyHarmonic = createCachedValue(getFrequencyHarmonic.bind(null, dictionaryEntry));
-    const frequencyAverage = createCachedValue(getFrequencyAverage.bind(null, dictionaryEntry));
+    const frequencyNumbers = createCachedValue(getFrequencyNumbers.bind(null, dictionaryEntry, null));
+    const frequencyHarmonic = createCachedValue(getFrequencyHarmonic.bind(null, dictionaryEntry, null));
+    const frequencyAverage = createCachedValue(getFrequencyAverage.bind(null, dictionaryEntry, null));
     const pitches = createCachedValue(getTermPitches.bind(null, dictionaryEntry));
     const phoneticTranscriptions = createCachedValue(getTermPhoneticTranscriptions.bind(null, dictionaryEntry));
     const glossary = createCachedValue(getTermGlossaryArray.bind(null, dictionaryEntry, type));
@@ -483,6 +490,7 @@ function getTermDefinition(dictionaryEntry, context, resultOutputMode, dictionar
         get termTags() { return getCachedValue(termTags); },
         get definitions() { return getCachedValue(commonInfo).definitions; },
         get frequencies() { return getCachedValue(frequencies); },
+        get frequencyNumbers() { return getCachedValue(frequencyNumbers); },
         get frequencyHarmonic() { return getCachedValue(frequencyHarmonic); },
         get frequencyAverage() { return getCachedValue(frequencyAverage); },
         get pitches() { return getCachedValue(pitches); },
@@ -662,10 +670,10 @@ function getTermPitches(dictionaryEntry) {
  */
 function getTermPitchesInner(pitches) {
     const results = [];
-    for (const {position, tags} of pitches) {
+    for (const {positions, tags} of pitches) {
         const cachedTags = createCachedValue(convertTags.bind(null, tags));
         results.push({
-            position,
+            positions,
             get tags() { return getCachedValue(cachedTags); },
         });
     }

@@ -17,20 +17,12 @@
  */
 
 import * as ajvSchemas0 from '../../lib/validate-schemas.js';
-// import {
-//     BlobWriter as BlobWriter0,
-//     TextWriter as TextWriter0,
-//     Uint8ArrayReader as Uint8ArrayReader0,
-//     ZipReader as ZipReader0,
-//     configure,
-// } from '../../lib/zip.js';
 import {compareRevisions} from './dictionary-data-util.js';
 import {ExtensionError} from '../core/extension-error.js';
 import {parseJson} from '../core/json.js';
 import {toError} from '../core/to-error.js';
 import {stringReverse} from '../core/utilities.js';
 import {getFileExtensionFromImageMediaType, getImageMediaTypeFromFileName} from '../media/media-util.js';
-// Zip/File/Image APIs are provided natively by the KMP host (QuickJS bindings).
 
 const ajvSchemas = /** @type {import('dictionary-importer').CompiledSchemaValidators} */ (/** @type {unknown} */ (ajvSchemas0));
 // TODO: Maybe use the no workers/streams version of https://gildas-lormeau.github.io/zip.js/
@@ -102,6 +94,8 @@ function safeJsonParse(text, fallback) {
         return fallback;
     }
 }
+
+const INDEX_FILE_NAME = 'index.json';
 
 export class DictionaryImporter {
     /**
@@ -430,6 +424,11 @@ export class DictionaryImporter {
             media: {total: mediaList.length},
         };
 
+        const yomitanVersion = details.yomitanVersion;
+        /** @type {import('dictionary-importer').SummaryDetails} */
+        const summaryDetails = {prefixWildcardsSupported, counts, styles: '', yomitanVersion, importSuccess: true};
+
+        // Read styles.css if present
         const stylesFileName = 'styles.css';
         const stylesFile = fileMap.get(stylesFileName);
         let styles = '';
@@ -444,9 +443,8 @@ export class DictionaryImporter {
             }
         }
 
-        const yomitanVersion = details.yomitanVersion;
-        /** @type {import('dictionary-importer').SummaryDetails} */
-        const summaryDetails = {prefixWildcardsSupported, counts, styles, yomitanVersion};
+        // Update summaryDetails with styles
+        summaryDetails.styles = styles;
 
         const summary = this._createSummary(dictionaryTitle, version, index, summaryDetails);
         await dictionaryDatabase.bulkAdd('dictionaries', [summary], 0, 1);
@@ -502,6 +500,22 @@ export class DictionaryImporter {
 
     /**
      * @param {import('dictionary-importer').ArchiveFileMap} fileMap
+     * @returns {?string}
+     */
+    _findRedundantDirectories(fileMap) {
+        let indexPath = '';
+        for (const file of fileMap) {
+            if (file[0].replace(/.*\//, '') === INDEX_FILE_NAME) {
+                indexPath = file[0];
+            }
+        }
+        const redundantDirectoriesRegex = new RegExp(`.*(?=${INDEX_FILE_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`);
+        const redundantDirectories = indexPath.match(redundantDirectoriesRegex);
+        return redundantDirectories ? redundantDirectories[0] : null;
+    }
+
+    /**
+     * @param {import('dictionary-importer').ArchiveFileMap} fileMap
      * @returns {Promise<import('dictionary-data').Index>}
      * @throws {Error}
      */
@@ -510,6 +524,10 @@ export class DictionaryImporter {
         const indexFileName = 'index.json';
         const indexFile = fileMap.get(indexFileName);
         if (typeof indexFile === 'undefined') {
+            const redundantDirectories = this._findRedundantDirectories(fileMap);
+            if (redundantDirectories) {
+                throw new Error('Dictionary index found nested in redundant directories: "' + redundantDirectories + '" when it must be in the archive\'s root directory');
+            }
             throw new Error('No dictionary index found in archive');
         }
         // const indexFile2 = /** @type {import('@zip.js/zip.js').Entry} */ (indexFile);
@@ -518,7 +536,7 @@ export class DictionaryImporter {
         const index = /** @type {unknown} */ (parseJson(indexContent));
 
         if (!ajvSchemas.dictionaryIndex(index)) {
-            throw this._formatAjvSchemaError(ajvSchemas.dictionaryIndex, indexFileName);
+            throw this._formatAjvSchemaError(ajvSchemas.dictionaryIndex, INDEX_FILE_NAME);
         }
 
         const validIndex = /** @type {import('dictionary-data').Index} */ (index);
@@ -576,7 +594,7 @@ export class DictionaryImporter {
      */
     _createSummary(dictionaryTitle, version, index, details) {
         const indexSequenced = index.sequenced;
-        const {prefixWildcardsSupported, counts, styles} = details;
+        const {prefixWildcardsSupported, counts, styles, importSuccess} = details;
         /** @type {import('dictionary-importer').Summary} */
         const summary = {
             title: dictionaryTitle,
@@ -587,6 +605,7 @@ export class DictionaryImporter {
             prefixWildcardsSupported,
             counts,
             styles,
+            importSuccess,
         };
 
         const {minimumYomitanVersion, author, url, description, attribution, frequencyMode, isUpdatable, sourceLanguage, targetLanguage} = index;
@@ -816,8 +835,6 @@ export class DictionaryImporter {
             default:
                 return;
         }
-        ++this._progressData.index;
-        this._progress();
     }
 
     /**
@@ -1152,14 +1169,10 @@ export class DictionaryImporter {
      * @template [TResult=unknown]
      * @param {import('@zip.js/zip.js').Entry[]} files
      * @param {(entry: TEntry, dictionaryTitle: string) => TResult} convertEntry
-     * @param {import('dictionary-importer').CompiledSchemaName} schemaName
      * @param {string} dictionaryTitle
      * @returns {Promise<TResult[]>}
      */
-    async _readFileSequence(files, convertEntry, schemaName, dictionaryTitle) {
-        const progressData = this._progressData;
-        let startIndex = 0;
-
+    async _readFileSequence(files, convertEntry, dictionaryTitle) {
         const results = [];
         for (const file of files) {
             const content = getNativeZip()._nativeZipReadEntryText(this._archiveUri, file.filename);
@@ -1173,17 +1186,6 @@ export class DictionaryImporter {
                     throw new Error(error.message + ` in '${file.filename}'`);
                 }
             }
-
-            startIndex = progressData.index;
-            this._progress();
-
-            const schema = ajvSchemas[schemaName];
-            if (!schema(entries)) {
-                throw this._formatAjvSchemaError(schema, file.filename);
-            }
-
-            progressData.index = startIndex + 1;
-            this._progress();
 
             if (Array.isArray(entries)) {
                 for (const entry of /** @type {TEntry[]} */ (entries)) {

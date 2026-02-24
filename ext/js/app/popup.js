@@ -73,6 +73,8 @@ export class Popup extends EventDispatcher {
         this._contentScale = 1;
         /** @type {string} */
         this._targetOrigin = chrome.runtime.getURL('/').replace(/\/$/, '');
+        /** @type {?import('core').Timeout} */
+        this._hidePopupTimer = null;
 
         /** @type {number} */
         this._initialWidth = 400;
@@ -102,6 +104,10 @@ export class Popup extends EventDispatcher {
         this._useShadowDom = true;
         /** @type {string} */
         this._customOuterCss = '';
+        /** @type {boolean} */
+        this._hidePopupOnCursorExit = false;
+        /** @type {number} */
+        this._hidePopupOnCursorExitDelay = 0;
 
         /** @type {?number} */
         this._frameSizeContentScale = null;
@@ -114,6 +120,8 @@ export class Popup extends EventDispatcher {
         this._frame.style.height = '0';
         /** @type {boolean} */
         this._frameConnected = false;
+        /** @type {boolean} */
+        this._isPointerOverPopup = false;
 
         /** @type {HTMLElement} */
         this._container = this._frame;
@@ -235,12 +243,42 @@ export class Popup extends EventDispatcher {
             return;
         }
 
+        this.stopHideDelayed();
+
         this._setVisible(false);
         if (this._child !== null) {
             this._child.hide(false);
         }
         if (changeFocus) {
             this._focusParent();
+        }
+    }
+
+    /**
+     * @param {number} delay
+     */
+    hideDelayed(delay) {
+        if (this.isPointerOverSelfOrChildren()) { return; }
+
+        if (delay > 0) {
+            this.stopHideDelayed();
+            this._hidePopupTimer = setTimeout(() => {
+                this._hidePopupTimer = null;
+                if (this.isPointerOverSelfOrChildren()) { return; }
+                this.hide(false);
+            }, delay);
+        } else {
+            this.hide(false);
+        }
+    }
+
+    /**
+     * @returns {void}
+     */
+    stopHideDelayed() {
+        if (this._hidePopupTimer !== null) {
+            clearTimeout(this._hidePopupTimer);
+            this._hidePopupTimer = null;
         }
     }
 
@@ -302,6 +340,9 @@ export class Popup extends EventDispatcher {
         if (optionsContext !== null) {
             await this._setOptionsContextIfDifferent(optionsContext);
         }
+
+        // If there's already a timer running on the same popup from a previous lookup, reset it
+        this.stopHideDelayed();
 
         await this._show(sourceRects, writingMode);
 
@@ -388,8 +429,7 @@ export class Popup extends EventDispatcher {
      * @returns {Promise<import('popup').ValidSize>} The size and whether or not it is valid.
      */
     async getFrameSize() {
-        const {width, height} = this._getFrameBoundingClientRect();
-        return {width, height, valid: true};
+        return {width: this._frame.offsetWidth, height: this._frame.offsetHeight, valid: true};
     }
 
     /**
@@ -403,20 +443,61 @@ export class Popup extends EventDispatcher {
         return true;
     }
 
+    /**
+     * Returns whether the pointer is currently over this popup.
+     * @returns {boolean}
+     */
+    isPointerOver() {
+        return this._isPointerOverPopup;
+    }
+
+    /**
+     * Returns whether the pointer is currently over this popup or any children.
+     * @returns {boolean}
+     */
+    isPointerOverSelfOrChildren() {
+        if (this.isPointerOver()) { return true; }
+
+        let currentChild = this.child;
+        while (currentChild !== null) {
+            if (currentChild.isPointerOver()) { return true; }
+            currentChild = currentChild.child;
+        }
+
+        return false;
+    }
+
     // Private functions
 
     /**
      * @returns {void}
      */
     _onFrameMouseOver() {
-        this.trigger('framePointerOver', {});
+        this._isPointerOverPopup = true;
+
+        this.stopHideDelayed();
+        this.trigger('mouseOver', {});
+
+        // Clear all child popups when parent is moused over
+        if (this._hidePopupOnCursorExit && this.child !== null) {
+            this.child.hideDelayed(this._hidePopupOnCursorExitDelay);
+        }
     }
 
     /**
      * @returns {void}
      */
     _onFrameMouseOut() {
-        this.trigger('framePointerOut', {});
+        this._isPointerOverPopup = false;
+
+        this.trigger('mouseOut', {});
+
+        // Propagate mouseOut event up through the entire hierarchy
+        let currentParent = this.parent;
+        while (currentParent !== null) {
+            currentParent.trigger('mouseOut', {});
+            currentParent = currentParent.parent;
+        }
     }
 
     /**
@@ -509,6 +590,12 @@ export class Popup extends EventDispatcher {
 	
 	        await connectPopup();
 	        this._frameConnected = true;
+
+        // Reattach mouse event listeners after frame injection
+        const boundMouseOver = this._onFrameMouseOver.bind(this);
+        const boundMouseOut = this._onFrameMouseOut.bind(this);
+        this._frame.addEventListener('mouseover', boundMouseOver);
+        this._frame.addEventListener('mouseout', boundMouseOut);
 
         // Configure
         /** @type {import('display').DirectApiParams<'displayConfigure'>} */
@@ -1061,7 +1148,7 @@ export class Popup extends EventDispatcher {
     async _setOptionsContext(optionsContext) {
         this._optionsContext = optionsContext;
         const options = await this._application.api.optionsGet(optionsContext);
-        const {general} = options;
+        const {general, scanning} = options;
         this._themeController.theme = general.popupTheme;
         this._themeController.outerTheme = general.popupOuterTheme;
         this._themeController.siteOverride = checkPopupPreviewURL(optionsContext.url);
@@ -1082,6 +1169,8 @@ export class Popup extends EventDispatcher {
         this._useSecureFrameUrl = general.useSecurePopupFrameUrl;
         this._useShadowDom = general.usePopupShadowDom;
         this._customOuterCss = general.customPopupOuterCss;
+        this._hidePopupOnCursorExit = scanning.hidePopupOnCursorExit;
+        this._hidePopupOnCursorExitDelay = scanning.hidePopupOnCursorExitDelay;
         void this.updateTheme();
     }
 

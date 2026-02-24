@@ -20,6 +20,7 @@ import {AnkiConnect} from '../comm/anki-connect.js';
 import {ClipboardMonitor} from '../comm/clipboard-monitor.js';
 import {ClipboardReader} from '../comm/clipboard-reader.js';
 import {Mecab} from '../comm/mecab.js';
+import {YomitanApi} from '../comm/yomitan-api.js';
 import {createApiMap, invokeApiMapHandler} from '../core/api-map.js';
 import {ExtensionError} from '../core/extension-error.js';
 import {fetchText} from '../core/fetch-utilities.js';
@@ -27,13 +28,14 @@ import {logErrorLevelToNumber} from '../core/log-utilities.js';
 import {log} from '../core/log.js';
 import {isObjectNotArray} from '../core/object-utilities.js';
 import {clone, deferPromise, promiseTimeout} from '../core/utilities.js';
-import {INVALID_NOTE_ID, isNoteDataValid} from '../data/anki-util.js';
+import {generateAnkiNoteMediaFileName, INVALID_NOTE_ID, isNoteDataValid} from '../data/anki-util.js';
 import {arrayBufferToBase64} from '../data/array-buffer-util.js';
 import {OptionsUtil} from '../data/options-util.js';
 import {getAllPermissions, hasPermissions, hasRequiredPermissionsForOptions} from '../data/permissions-util.js';
 import {DictionaryDatabase} from '../dictionary/dictionary-database.js';
 import {DictionaryWorker} from '../dictionary/dictionary-worker.js';
 import {Environment} from '../extension/environment.js';
+import {CacheMap} from '../general/cache-map.js';
 import {ObjectPropertyAccessor} from '../general/object-property-accessor.js';
 import {distributeFuriganaInflected, isCodePointJapanese, convertKatakanaToHiragana as jpConvertKatakanaToHiragana} from '../language/ja/japanese.js';
 import {getLanguageSummaries, isTextLookupWorthy} from '../language/languages.js';
@@ -184,12 +186,14 @@ export class Backend {
             ['isTabSearchPopup',             this._onApiIsTabSearchPopup.bind(this)],
             ['triggerDatabaseUpdated',       this._onApiTriggerDatabaseUpdated.bind(this)],
             ['testMecab',                    this._onApiTestMecab.bind(this)],
+            ['testYomitanApi',               this._onApiTestYomitanApi.bind(this)],
             ['isTextLookupWorthy',           this._onApiIsTextLookupWorthy.bind(this)],
             ['getTermFrequencies',           this._onApiGetTermFrequencies.bind(this)],
             ['findAnkiNotes',                this._onApiFindAnkiNotes.bind(this)],
             ['openCrossFramePort',           this._onApiOpenCrossFramePort.bind(this)],
             ['getLanguageSummaries',         this._onApiGetLanguageSummaries.bind(this)],
             ['heartbeat',                    this._onApiHeartbeat.bind(this)],
+            ['forceSync',                    this._onApiForceSync.bind(this)],
         ]);
 
         /** @type {import('api').PmApiMap} */
@@ -207,6 +211,11 @@ export class Backend {
             ['openSearchPage', this._onCommandOpenSearchPage.bind(this)],
             ['openPopupWindow', this._onCommandOpenPopupWindow.bind(this)],
         ]));
+
+        /** @type {YomitanApi} */
+        this._yomitanApi = new YomitanApi(this._apiMap, this._offscreen);
+        /** @type {CacheMap<string, {originalTextLength: number, textSegments: import('api').ParseTextSegment[]}>} */
+        this._textParseCache = new CacheMap(10000, 3600000); // 1 hour idle time, ~32MB per 1000 entries for Japanese
     }
 
     /**
@@ -582,31 +591,44 @@ export class Backend {
 
     /** @type {import('api').ApiHandler<'parseText'>} */
     async _onApiParseText({text, optionsContext, scanLength, useInternalParser, useMecabParser}) {
-        const [internalResults, mecabResults] = await Promise.all([
-            (useInternalParser ? this._textParseScanning(text, scanLength, optionsContext) : null),
-            (useMecabParser ? this._textParseMecab(text) : null),
-        ]);
-
         /** @type {import('api').ParseTextResultItem[]} */
         const results = [];
 
-        if (internalResults !== null) {
-            results.push({
-                id: 'scan',
-                source: 'scanning-parser',
-                dictionary: null,
-                content: internalResults,
-            });
-        }
+        const [internalResults, mecabResults] = await Promise.all([
+            useInternalParser ?
+                (Array.isArray(text) ?
+                    Promise.all(text.map((t) => this._textParseScanning(t, scanLength, optionsContext))) :
+                    Promise.all([this._textParseScanning(text, scanLength, optionsContext)])) :
+                null,
+            useMecabParser ?
+                (Array.isArray(text) ?
+                    Promise.all(text.map((t) => this._textParseMecab(t))) :
+                    Promise.all([this._textParseMecab(text)])) :
+                null,
+        ]);
 
-        if (mecabResults !== null) {
-            for (const [dictionary, content] of mecabResults) {
+        if (internalResults !== null) {
+            for (const [index, internalResult] of internalResults.entries()) {
                 results.push({
-                    id: `mecab-${dictionary}`,
-                    source: 'mecab',
-                    dictionary,
-                    content,
+                    id: 'scan',
+                    source: 'scanning-parser',
+                    dictionary: null,
+                    index,
+                    content: internalResult,
                 });
+            }
+        }
+        if (mecabResults !== null) {
+            for (const [index, mecabResult] of mecabResults.entries()) {
+                for (const [dictionary, content] of mecabResult) {
+                    results.push({
+                        id: `mecab-${dictionary}`,
+                        source: 'mecab',
+                        dictionary,
+                        index,
+                        content,
+                    });
+                }
             }
         }
 
@@ -651,6 +673,39 @@ export class Backend {
 
     /**
      * @param {import('anki').Note[]} notes
+     * @param {import('anki').Note[]} notesStrippedNoDuplicates
+     * @returns {Promise<{ note: import('anki').Note, isDuplicate: boolean }[]>}
+     */
+    async _findDuplicates(notes, notesStrippedNoDuplicates) {
+        const canAddNotesWithErrors = await this._anki.canAddNotesWithErrorDetail(notesStrippedNoDuplicates);
+        return canAddNotesWithErrors.map((item, i) => ({
+            note: notes[i],
+            isDuplicate: item.error === null ?
+                false :
+                item.error.includes('cannot create note because it is a duplicate'),
+        }));
+    }
+
+    /**
+     * @param {import('anki').Note[]} notes
+     * @param {import('anki').Note[]} notesStrippedNoDuplicates
+     * @param {import('anki').Note[]} notesStrippedDuplicates
+     * @returns {Promise<{ note: import('anki').Note, isDuplicate: boolean }[]>}
+     */
+    async _findDuplicatesFallback(notes, notesStrippedNoDuplicates, notesStrippedDuplicates) {
+        const [withDuplicatesAllowed, noDuplicatesAllowed] = await Promise.all([
+            this._anki.canAddNotes(notesStrippedDuplicates),
+            this._anki.canAddNotes(notesStrippedNoDuplicates),
+        ]);
+
+        return withDuplicatesAllowed.map((item, i) => ({
+            note: notes[i],
+            isDuplicate: item !== noDuplicatesAllowed[i],
+        }));
+    }
+
+    /**
+     * @param {import('anki').Note[]} notes
      * @returns {Promise<import('backend').CanAddResults>}
      */
     async partitionAddibleNotes(notes) {
@@ -662,35 +717,24 @@ export class Backend {
         // to check which notes are duplicates.
         const notesNoDuplicatesAllowed = strippedNotes.map((note) => ({...note, options: {...note.options, allowDuplicate: false}}));
 
-        // If only older AnkiConnect available, use `canAddNotes`.
-        const withDuplicatesAllowed = await this._anki.canAddNotes(strippedNotes);
-        const noDuplicatesAllowed = await this._anki.canAddNotes(notesNoDuplicatesAllowed);
-
-        /** @type {{ note: import('anki').Note, isDuplicate: boolean }[]} */
-        const canAddArray = [];
-
-        /** @type {import('anki').Note[]} */
-        const cannotAddArray = [];
-
-        for (let i = 0; i < withDuplicatesAllowed.length; i++) {
-            if (withDuplicatesAllowed[i] === noDuplicatesAllowed[i]) {
-                canAddArray.push({note: notes[i], isDuplicate: false});
-            } else {
-                canAddArray.push({note: notes[i], isDuplicate: true});
+        try {
+            return await this._findDuplicates(notes, notesNoDuplicatesAllowed);
+        } catch (e) {
+            // User has older anki-connect that does not support canAddNotesWithErrorDetail
+            if (e instanceof ExtensionError && e.message.includes('Anki error: unsupported action')) {
+                return await this._findDuplicatesFallback(notes, notesNoDuplicatesAllowed, strippedNotes);
             }
-        }
 
-        return {canAddArray, cannotAddArray};
+            throw e;
+        }
     }
 
     /** @type {import('api').ApiHandler<'getAnkiNoteInfo'>} */
     async _onApiGetAnkiNoteInfo({notes, fetchAdditionalInfo}) {
-        const {canAddArray, cannotAddArray} = await this.partitionAddibleNotes(notes);
+        const canAddArray = await this.partitionAddibleNotes(notes);
 
         /** @type {import('anki').NoteInfoWrapper[]} */
-        const results = cannotAddArray
-            .filter((note) => isNoteDataValid(note))
-            .map(() => ({canAdd: false, valid: false, noteIds: null}));
+        const results = [];
 
         /** @type {import('anki').Note[]} */
         const duplicateNotes = [];
@@ -706,7 +750,10 @@ export class Backend {
             }
         }
 
-        const duplicateNoteIds = await this._anki.findNoteIds(duplicateNotes);
+        const duplicateNoteIds =
+            duplicateNotes.length > 0 ?
+                await this._anki.findNoteIds(duplicateNotes) :
+                [];
 
         for (let i = 0; i < canAddArray.length; ++i) {
             const {note, isDuplicate} = canAddArray[i];
@@ -1055,6 +1102,43 @@ export class Backend {
         return true;
     }
 
+    /** @type {import('api').ApiHandler<'testYomitanApi'>} */
+    async _onApiTestYomitanApi({url}) {
+        if (!this._yomitanApi.isEnabled()) {
+            throw new Error('Yomitan Api not enabled');
+        }
+
+        let permissionsOkay = false;
+        try {
+            permissionsOkay = await hasPermissions({permissions: ['nativeMessaging']});
+        } catch (e) {
+            // NOP
+        }
+        if (!permissionsOkay) {
+            throw new Error('Insufficient permissions');
+        }
+
+        const disconnect = !this._yomitanApi.isConnected();
+        try {
+            const version = await this._yomitanApi.getRemoteVersion(url);
+            if (version === null) {
+                throw new Error('Could not connect to native Yomitan API component');
+            }
+
+            const localVersion = this._yomitanApi.getLocalVersion();
+            if (version !== localVersion) {
+                throw new Error(`Yomitan API component version not supported: ${version}`);
+            }
+        } finally {
+            // Disconnect if the connection was previously disconnected
+            if (disconnect && this._yomitanApi.isEnabled()) {
+                this._yomitanApi.disconnect();
+            }
+        }
+
+        return true;
+    }
+
     /** @type {import('api').ApiHandler<'isTextLookupWorthy'>} */
     _onApiIsTextLookupWorthy({text, language}) {
         return isTextLookupWorthy(text, language);
@@ -1129,6 +1213,17 @@ export class Backend {
 
     /** @type {import('api').ApiHandler<'heartbeat'>} */
     _onApiHeartbeat() {
+        return void 0;
+    }
+
+    /** @type {import('api').ApiHandler<'forceSync'>} */
+    async _onApiForceSync() {
+        try {
+            await this._anki.makeAnkiSync();
+        } catch (e) {
+            log.error(e);
+            throw e;
+        }
         return void 0;
     }
 
@@ -1466,6 +1561,8 @@ export class Backend {
 
         this._mecab.setEnabled(options.parsing.enableMecabParser && enabled);
 
+        void this._yomitanApi.setEnabled(options.general.enableYomitanApi && enabled);
+
         if (options.clipboard.enableBackgroundMonitor && enabled) {
             this._clipboardMonitor.start();
         } else {
@@ -1476,6 +1573,8 @@ export class Backend {
         // this._setupContextMenu(options);
 
         void this._accessibilityController.update(this._getOptionsFull(false));
+
+        this._textParseCache.clear();
 
         this._sendMessageAllTabsIgnoreResponse({action: 'applicationOptionsUpdated', params: {source}});
     }
@@ -1509,6 +1608,7 @@ export class Backend {
     /** */
     _attachOmniboxListener() {
         try {
+            if (!chrome.omnibox) { return; }
             chrome.omnibox.onInputEntered.addListener((text) => {
                 const newURL = 'search.html?query=' + encodeURIComponent(text);
                 void chrome.tabs.create({url: newURL});
@@ -1657,25 +1757,54 @@ export class Backend {
         let i = 0;
         const ii = text.length;
         while (i < ii) {
-            const {dictionaryEntries, originalTextLength} = await this._translator.findTerms(
-                mode,
-                text.substring(i, i + scanLength),
-                findTermsOptions,
-            );
             const codePoint = /** @type {number} */ (text.codePointAt(i));
             const character = String.fromCodePoint(codePoint);
-            if (
-                dictionaryEntries.length > 0 &&
+            const substring = text.substring(i, i + scanLength);
+            const cacheKey = `${optionsContext.index}:${substring}`;
+            let cached = this._textParseCache.get(cacheKey);
+            if (typeof cached === 'undefined') {
+                const {dictionaryEntries, originalTextLength} = await this._translator.findTerms(
+                    mode,
+                    substring,
+                    findTermsOptions,
+                );
+                /** @type {import('api').ParseTextSegment[]} */
+                const textSegments = [];
+                if (dictionaryEntries.length > 0 &&
                 originalTextLength > 0 &&
                 (originalTextLength !== character.length || isCodePointJapanese(codePoint))
-            ) {
-                previousUngroupedSegment = null;
-                const {headwords: [{term, reading}]} = dictionaryEntries[0];
-                const source = text.substring(i, i + originalTextLength);
-                const textSegments = [];
-                for (const {text: text2, reading: reading2} of distributeFuriganaInflected(term, reading, source)) {
-                    textSegments.push({text: text2, reading: reading2});
+                ) {
+                    const {headwords: [{term, reading}]} = dictionaryEntries[0];
+                    const source = substring.substring(0, originalTextLength);
+                    for (const {text: text2, reading: reading2} of distributeFuriganaInflected(term, reading, source)) {
+                        textSegments.push({text: text2, reading: reading2});
+                    }
+                    if (textSegments.length > 0) {
+                        const token = textSegments.map((s) => s.text).join('');
+                        const trimmedHeadwords = [];
+                        for (const dictionaryEntry of dictionaryEntries) {
+                            const validHeadwords = [];
+                            for (const headword of dictionaryEntry.headwords) {
+                                const validSources = [];
+                                for (const src of headword.sources) {
+                                    if (src.originalText !== token) { continue; }
+                                    if (!src.isPrimary) { continue; }
+                                    if (src.matchType !== 'exact') { continue; }
+                                    validSources.push(src);
+                                }
+                                if (validSources.length > 0) { validHeadwords.push({term: headword.term, reading: headword.reading, sources: validSources}); }
+                            }
+                            if (validHeadwords.length > 0) { trimmedHeadwords.push(validHeadwords); }
+                        }
+                        textSegments[0].headwords = trimmedHeadwords;
+                    }
                 }
+                cached = {originalTextLength, textSegments};
+                if (typeof optionsContext.index !== 'undefined') { this._textParseCache.set(cacheKey, cached); }
+            }
+            const {originalTextLength, textSegments} = cached;
+            if (textSegments.length > 0) {
+                previousUngroupedSegment = null;
                 results.push(textSegments);
                 i += originalTextLength;
             } else {
@@ -2362,7 +2491,7 @@ export class Backend {
         const {term, reading} = definitionDetails;
         if (term.length === 0 && reading.length === 0) { return null; }
 
-        const {sources, preferredAudioIndex, idleTimeout, languageSummary} = details;
+        const {sources, preferredAudioIndex, idleTimeout, languageSummary, enableDefaultAudioSources} = details;
         let data;
         let contentType;
         try {
@@ -2373,6 +2502,7 @@ export class Backend {
                 reading,
                 idleTimeout,
                 languageSummary,
+                enableDefaultAudioSources,
             ));
         } catch (e) {
             const error = this._getAudioDownloadError(e);
@@ -2384,7 +2514,7 @@ export class Backend {
 
         let extension = contentType !== null ? getFileExtensionFromAudioMediaType(contentType) : null;
         if (extension === null) { extension = '.mp3'; }
-        let fileName = this._generateAnkiNoteMediaFileName('yomitan_audio', extension, timestamp);
+        let fileName = generateAnkiNoteMediaFileName('yomitan_audio', extension, timestamp);
         fileName = fileName.replace(/\]/g, '');
         return await ankiConnect.storeMediaFile(fileName, data);
     }
@@ -2405,7 +2535,7 @@ export class Backend {
             throw new Error('Unknown media type for screenshot image');
         }
 
-        const fileName = this._generateAnkiNoteMediaFileName('yomitan_browser_screenshot', extension, timestamp);
+        const fileName = generateAnkiNoteMediaFileName('yomitan_browser_screenshot', extension, timestamp);
         return await ankiConnect.storeMediaFile(fileName, data);
     }
 
@@ -2428,7 +2558,7 @@ export class Backend {
 
         const fileName = dataUrl === this._ankiClipboardImageDataUrlCache && this._ankiClipboardImageFilenameCache ?
             this._ankiClipboardImageFilenameCache :
-            this._generateAnkiNoteMediaFileName('yomitan_clipboard_image', extension, timestamp);
+            generateAnkiNoteMediaFileName('yomitan_clipboard_image', extension, timestamp);
 
         const storedFileName = await ankiConnect.storeMediaFile(fileName, data);
 
@@ -2478,7 +2608,7 @@ export class Backend {
             if (media !== null) {
                 const {content, mediaType} = media;
                 const extension = getFileExtensionFromImageMediaType(mediaType);
-                fileName = this._generateAnkiNoteMediaFileName(
+                fileName = generateAnkiNoteMediaFileName(
                     `yomitan_dictionary_media_${i + 1}`,
                     extension !== null ? extension : '',
                     timestamp,
@@ -2556,47 +2686,6 @@ export class Backend {
             }
         }
         return error;
-    }
-
-    /**
-     * @param {string} prefix
-     * @param {string} extension
-     * @param {number} timestamp
-     * @returns {string}
-     */
-    _generateAnkiNoteMediaFileName(prefix, extension, timestamp) {
-        let fileName = prefix;
-
-        fileName += `_${this._ankNoteDateToString(new Date(timestamp))}`;
-        fileName += extension;
-
-        fileName = this._replaceInvalidFileNameCharacters(fileName);
-
-        return fileName;
-    }
-
-    /**
-     * @param {string} fileName
-     * @returns {string}
-     */
-    _replaceInvalidFileNameCharacters(fileName) {
-        // eslint-disable-next-line no-control-regex
-        return fileName.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-');
-    }
-
-    /**
-     * @param {Date} date
-     * @returns {string}
-     */
-    _ankNoteDateToString(date) {
-        const year = date.getUTCFullYear();
-        const month = date.getUTCMonth().toString().padStart(2, '0');
-        const day = date.getUTCDate().toString().padStart(2, '0');
-        const hours = date.getUTCHours().toString().padStart(2, '0');
-        const minutes = date.getUTCMinutes().toString().padStart(2, '0');
-        const seconds = date.getUTCSeconds().toString().padStart(2, '0');
-        const milliseconds = date.getUTCMilliseconds().toString().padStart(3, '0');
-        return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}-${milliseconds}`;
     }
 
     /**
@@ -2734,7 +2823,9 @@ export class Backend {
             for (const {pattern, ignoreCase, replacement} of group) {
                 let patternRegExp;
                 try {
-                    patternRegExp = new RegExp(pattern, ignoreCase ? 'gi' : 'g');
+                    patternRegExp = ignoreCase ?
+                        new RegExp(pattern.replace(/['’]/g, "['’]"), 'gi') :
+                        new RegExp(pattern, 'g');
                 } catch (e) {
                     // Invalid pattern
                     continue;

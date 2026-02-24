@@ -22,6 +22,7 @@ import {AnkiNoteBuilder} from '../../data/anki-note-builder.js';
 import {getDynamicTemplates} from '../../data/anki-template-util.js';
 import {querySelectorNotNull} from '../../dom/query-selector.js';
 import {getLanguageSummaries} from '../../language/languages.js';
+import {getRequiredAudioSources} from '../../media/audio-downloader.js';
 import {TemplateRendererProxy} from '../../templates/template-renderer-proxy.js';
 
 export class AnkiDeckGeneratorController {
@@ -93,6 +94,10 @@ export class AnkiDeckGeneratorController {
         this._defaultFieldTemplates = await this._settingsController.application.api.getDefaultAnkiFieldTemplates();
 
         /** @type {HTMLButtonElement} */
+        const parseWordsButton = querySelectorNotNull(document, '#generate-anki-notes-parse-button');
+        /** @type {HTMLButtonElement} */
+        const dedupeWordsButton = querySelectorNotNull(document, '#generate-anki-notes-dedupe-button');
+        /** @type {HTMLButtonElement} */
         const testRenderButton = querySelectorNotNull(document, '#generate-anki-notes-test-render-button');
         /** @type {HTMLButtonElement} */
         const sendToAnkiButton = querySelectorNotNull(document, '#generate-anki-notes-send-to-anki-button');
@@ -108,6 +113,8 @@ export class AnkiDeckGeneratorController {
         this._sendToAnkiConfirmModal = this._modalController.getModal('generate-anki-notes-send-to-anki');
         this._exportConfirmModal = this._modalController.getModal('generate-anki-notes-export');
 
+        parseWordsButton.addEventListener('click', this._onParse.bind(this), false);
+        dedupeWordsButton.addEventListener('click', this._onDedupe.bind(this), false);
         testRenderButton.addEventListener('click', this._onRender.bind(this), false);
         sendToAnkiButton.addEventListener('click', this._onSendToAnki.bind(this), false);
         this._sendToAnkiButtonConfirmButton.addEventListener('click', this._onSendToAnkiConfirm.bind(this), false);
@@ -127,6 +134,32 @@ export class AnkiDeckGeneratorController {
     }
 
     // Private
+
+    /** */
+    async _onParse() {
+        const options = await this._settingsController.getOptions();
+        const optionsContext = this._settingsController.getOptionsContext();
+        const parserResult = await this._application.api.parseText(this._wordInputTextarea.value, optionsContext, options.scanning.length, !options.parsing.enableMecabParser, options.parsing.enableMecabParser);
+        const parsedText = parserResult[0].content;
+
+        const parsedParts = [];
+        for (const parsedTextLine of parsedText) {
+            let combinedSegments = '';
+            for (const parsedTextSegment of parsedTextLine) {
+                combinedSegments += parsedTextSegment.text;
+            }
+            combinedSegments = combinedSegments.trim();
+            if (combinedSegments.length > 0) {
+                parsedParts.push(combinedSegments);
+            }
+        }
+        this._wordInputTextarea.value = parsedParts.join('\n');
+    }
+
+    /** */
+    _onDedupe() {
+        this._wordInputTextarea.value = [...new Set(this._wordInputTextarea.value.split('\n'))].join('\n');
+    }
 
     /** */
     async _setupModelSelection() {
@@ -464,8 +497,9 @@ export class AnkiDeckGeneratorController {
         const {general: {resultOutputMode, glossaryLayoutMode, compactTags}} = options;
         const idleTimeout = (Number.isFinite(options.anki.downloadTimeout) && options.anki.downloadTimeout > 0 ? options.anki.downloadTimeout : null);
         const languageSummary = getLanguageSummaries().find(({iso}) => iso === options.general.language);
-        const mediaOptions = addMedia ? {audio: {sources: options.audio.sources, preferredAudioIndex: null, idleTimeout: idleTimeout, languageSummary: languageSummary}} : null;
-        const requirements = addMedia ? [...this._getDictionaryEntryMedia(dictionaryEntry), {type: 'audio'}] : [];
+        const requiredAudioSources = options.audio.enableDefaultAudioSources ? getRequiredAudioSources(options.general.language, options.audio.sources) : [];
+        const mediaOptions = addMedia ? {audio: {sources: [...options.audio.sources, ...requiredAudioSources], preferredAudioIndex: null, idleTimeout: idleTimeout, languageSummary: languageSummary}} : null;
+        const requirements = addMedia ? [...getDictionaryEntryMedia(dictionaryEntry), {type: 'audio'}] : [];
         const dictionaryStylesMap = this._ankiNoteBuilder.getDictionaryStylesMap(options.dictionaries);
         const cardFormat = /** @type {import('settings').AnkiCardFormat} */ ({
             deck: this._activeAnkiDeck,
@@ -515,38 +549,6 @@ export class AnkiDeckGeneratorController {
             dictionaryEntry: /** @type {import('dictionary').DictionaryEntry} */ (dictionaryEntriesTermKanji[0]),
             text: text,
         };
-    }
-
-    /**
-     * @param {import('dictionary').DictionaryEntry} dictionaryEntry
-     * @returns {Array<object>}
-     */
-    _getDictionaryEntryMedia(dictionaryEntry) {
-        if (dictionaryEntry.type !== 'term') {
-            return [];
-        }
-        const media = [];
-        const definitions = dictionaryEntry.definitions;
-        for (const definition of definitions) {
-            const paths = this._findAllPaths(definition);
-            for (const path of paths) {
-                media.push({dictionary: definition.dictionary, path: path, type: 'dictionaryMedia'});
-            }
-        }
-        return media;
-    }
-
-    /**
-     * Extracts all values of json keys named `path` which contain a string value.
-     * Example json snippet containing a path:
-     * ...","path":"example-dictionary/svg/example-media.svg","...
-     * The path can be found in many different positions in the structure of the definition json.
-     * It is most reliable to flatten it to a string and use regex.
-     * @param {object} obj
-     * @returns {Array<string>}
-     */
-    _findAllPaths(obj) {
-        return JSON.stringify(obj).match(/(?<="path":").*?(?=")/g) ?? [];
     }
 
     /**
@@ -629,4 +631,37 @@ export class AnkiDeckGeneratorController {
         a.dispatchEvent(new MouseEvent('click'));
         setTimeout(revoke, 60000);
     }
+}
+
+/**
+ * @param {import('dictionary').DictionaryEntry} dictionaryEntry
+ * @returns {Array<import('anki-note-builder').RequirementDictionaryMedia>}
+ */
+export function getDictionaryEntryMedia(dictionaryEntry) {
+    if (dictionaryEntry.type !== 'term') {
+        return [];
+    }
+    /** @type {Array<import('anki-note-builder').RequirementDictionaryMedia>} */
+    const media = [];
+    const definitions = dictionaryEntry.definitions;
+    for (const definition of definitions) {
+        const paths = [...new Set(findAllPaths(definition))];
+        for (const path of paths) {
+            media.push({dictionary: definition.dictionary, path: path, type: 'dictionaryMedia'});
+        }
+    }
+    return media;
+}
+
+/**
+ * Extracts all values of json keys named `path` which contain a string value.
+ * Example json snippet containing a path:
+ * ...","path":"example-dictionary/svg/example-media.svg","...
+ * The path can be found in many different positions in the structure of the definition json.
+ * It is most reliable to flatten it to a string and use regex.
+ * @param {object} obj
+ * @returns {Array<string>}
+ */
+function findAllPaths(obj) {
+    return JSON.stringify(obj).match(/(?<="path":").*?(?=")/g) ?? [];
 }

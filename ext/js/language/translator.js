@@ -19,6 +19,7 @@
 import {safePerformance} from '../core/safe-performance.js';
 import {applyTextReplacement} from '../general/regex-util.js';
 import {isCodePointJapanese} from './ja/japanese.js';
+import {isCodePointKorean} from './ko/korean.js';
 import {LanguageTransformer} from './language-transformer.js';
 import {getAllLanguageReadingNormalizers, getAllLanguageTextProcessors} from './languages.js';
 import {MultiLanguageTransformer} from './multi-language-transformer.js';
@@ -71,7 +72,6 @@ export class Translator {
     /**
      * Finds term definitions for the given text.
      * @param {import('translator').FindTermsMode} mode The mode to use for finding terms, which determines the format of the resulting array.
-     *   One of: 'group', 'merge', 'split', 'simple'
      * @param {string} text The text to find terms for.
      * @param {import('translation').FindTermsOptions} options A object describing settings about the lookup.
      * @returns {Promise<{dictionaryEntries: import('dictionary').TermDictionaryEntry[], originalTextLength: number}>} An object containing dictionary entries and the length of the original source text.
@@ -85,6 +85,9 @@ export class Translator {
         switch (mode) {
             case 'group':
                 dictionaryEntries = this._groupDictionaryEntriesByHeadword(language, dictionaryEntries, tagAggregator, primaryReading);
+                break;
+            case 'term':
+                dictionaryEntries = this._groupDictionaryEntriesByTerm(language, dictionaryEntries, tagAggregator, primaryReading);
                 break;
             case 'merge':
                 dictionaryEntries = await this._getRelatedDictionaryEntries(dictionaryEntries, options, tagAggregator);
@@ -139,7 +142,7 @@ export class Translator {
      */
     async findKanji(text, options) {
         if (options.removeNonJapaneseCharacters) {
-            text = this._getJapaneseChineseOnlyText(text);
+            text = this._getJapaneseChineseKoreanOnlyText(text);
         }
         const {enabledDictionaryMap} = options;
         /** @type {Set<string>} */
@@ -229,8 +232,8 @@ export class Translator {
      */
     async _findTermsInternal(text, options, tagAggregator, primaryReading) {
         const {removeNonJapaneseCharacters, enabledDictionaryMap} = options;
-        if (removeNonJapaneseCharacters && (['ja', 'zh', 'yue'].includes(options.language))) {
-            text = this._getJapaneseChineseOnlyText(text);
+        if (removeNonJapaneseCharacters && (['ja', 'zh', 'yue', 'ko'].includes(options.language))) {
+            text = this._getJapaneseChineseKoreanOnlyText(text);
         }
         if (text.length === 0) {
             return {dictionaryEntries: [], originalTextLength: 0};
@@ -653,11 +656,11 @@ export class Translator {
      * @param {string} text
      * @returns {string}
      */
-    _getJapaneseChineseOnlyText(text) {
+    _getJapaneseChineseKoreanOnlyText(text) {
         let length = 0;
         for (const c of text) {
             const codePoint = /** @type {number} */ (c.codePointAt(0));
-            if (!isCodePointJapanese(codePoint) && !isCodePointChinese(codePoint)) {
+            if (!isCodePointJapanese(codePoint) && !isCodePointChinese(codePoint) && !isCodePointKorean(codePoint)) {
                 return text.substring(0, length);
             }
             length += c.length;
@@ -849,13 +852,45 @@ export class Translator {
      * @returns {import('translation-internal').TermDictionaryEntry[]}
      */
     _groupDictionaryEntriesByHeadword(language, dictionaryEntries, tagAggregator, primaryReading) {
-        /** @type {Map<string, import('translation-internal').TermDictionaryEntry[]>} */
-        const groups = new Map();
         const readingNormalizer = this._readingNormalizers.get(language);
-        for (const dictionaryEntry of dictionaryEntries) {
+        /** @type {(entry: import('translation-internal').TermDictionaryEntry) => string} */
+        const createGroupingKey = (dictionaryEntry) => {
             const {inflectionRuleChainCandidates, headwords: [{term, reading}]} = dictionaryEntry;
             const normalizedReading = typeof readingNormalizer === 'undefined' ? reading : readingNormalizer(reading);
-            const key = this._createMapKey([term, normalizedReading, ...inflectionRuleChainCandidates]);
+            return this._createMapKey([term, normalizedReading, ...inflectionRuleChainCandidates]);
+        };
+        return this._groupDictionaryEntries(language, dictionaryEntries, tagAggregator, primaryReading, createGroupingKey);
+    }
+
+    /**
+     * @param {string} language
+     * @param {Iterable<import('translation-internal').TermDictionaryEntry>} dictionaryEntries
+     * @param {TranslatorTagAggregator} tagAggregator
+     * @param {string} primaryReading
+     * @returns {import('translation-internal').TermDictionaryEntry[]}
+     */
+    _groupDictionaryEntriesByTerm(language, dictionaryEntries, tagAggregator, primaryReading) {
+        /** @type {(entry: import('translation-internal').TermDictionaryEntry) => string} */
+        const createGroupingKey = (dictionaryEntry) => {
+            const {inflectionRuleChainCandidates, headwords: [{term}]} = dictionaryEntry;
+            return this._createMapKey([term, ...inflectionRuleChainCandidates]);
+        };
+        return this._groupDictionaryEntries(language, dictionaryEntries, tagAggregator, primaryReading, createGroupingKey);
+    }
+
+    /**
+     * @param {string} language
+     * @param {Iterable<import('translation-internal').TermDictionaryEntry>} dictionaryEntries
+     * @param {TranslatorTagAggregator} tagAggregator
+     * @param {string} primaryReading
+     * @param {(entry: import('translation-internal').TermDictionaryEntry) => string} createGroupingKey
+     * @returns {import('translation-internal').TermDictionaryEntry[]}
+     */
+    _groupDictionaryEntries(language, dictionaryEntries, tagAggregator, primaryReading, createGroupingKey) {
+        /** @type {Map<string, import('translation-internal').TermDictionaryEntry[]>} */
+        const groups = new Map();
+        for (const dictionaryEntry of dictionaryEntries) {
+            const key = createGroupingKey(dictionaryEntry);
             let groupDictionaryEntries = groups.get(key);
             if (typeof groupDictionaryEntries === 'undefined') {
                 groupDictionaryEntries = [];
@@ -1258,7 +1293,7 @@ export class Translator {
                                 const devoicePositions = this._toNumberArray(devoice);
                                 pitches.push({
                                     type: 'pitch-accent',
-                                    position,
+                                    positions: position,
                                     nasalPositions,
                                     devoicePositions,
                                     tags: tags2,
@@ -1780,8 +1815,17 @@ export class Translator {
         const definitionEntries = [];
         /** @type {Map<string, import('dictionary').TermHeadword>} */
         const headwords = new Map();
+        /** @type {Map<number, number>} */
+        const headwordDictionaryIndices = new Map();
         for (const dictionaryEntry of dictionaryEntries) {
             const headwordIndexMap = this._addTermHeadwords(language, headwords, dictionaryEntry.headwords, tagAggregator);
+            // Track minimum dictionary index for each headword
+            for (const headwordIndex of headwordIndexMap) {
+                const existing = headwordDictionaryIndices.get(headwordIndex);
+                if (typeof existing === 'undefined' || dictionaryEntry.dictionaryIndex < existing) {
+                    headwordDictionaryIndices.set(headwordIndex, dictionaryEntry.dictionaryIndex);
+                }
+            }
             definitionEntries.push({index: definitionEntries.length, dictionaryEntry, headwordIndexMap});
         }
 
@@ -1832,19 +1876,9 @@ export class Translator {
 
         const headwordsArray = [...headwords.values()];
 
-        let sourceTermExactMatchCount = 0;
-        let matchPrimaryReading = false;
-        for (const {sources, reading} of headwordsArray) {
-            if (primaryReading.length > 0 && reading === primaryReading) {
-                matchPrimaryReading = true;
-            }
-            for (const source of sources) {
-                if (source.isPrimary && source.matchSource === 'term') {
-                    ++sourceTermExactMatchCount;
-                    break;
-                }
-            }
-        }
+        this._sortHeadwords(headwordsArray, headwordDictionaryIndices, definitions);
+
+        const {sourceTermExactMatchCount, matchPrimaryReading} = this._getHeadwordMatchCounts(headwordsArray, primaryReading);
 
         return this._createTermDictionaryEntry(
             isPrimary,
@@ -1859,6 +1893,64 @@ export class Translator {
             headwordsArray,
             definitions,
         );
+    }
+
+    /**
+     * @param {import('dictionary').TermHeadword[]} headwordsArray
+     * @param {Map<number, number>} headwordDictionaryIndices
+     * @param {import('dictionary').TermDefinition[]} definitions
+     */
+    _sortHeadwords(headwordsArray, headwordDictionaryIndices, definitions) {
+        // Sort headwords: primary sources first, then by dictionary index
+        headwordsArray.sort((a, b) => {
+            const aHasPrimary = a.sources.some((s) => s.isPrimary);
+            const bHasPrimary = b.sources.some((s) => s.isPrimary);
+            if (aHasPrimary !== bHasPrimary) { return aHasPrimary ? -1 : 1; }
+            const aDictIndex = headwordDictionaryIndices.get(a.index) ?? Number.MAX_SAFE_INTEGER;
+            const bDictIndex = headwordDictionaryIndices.get(b.index) ?? Number.MAX_SAFE_INTEGER;
+            return aDictIndex - bDictIndex;
+        });
+
+        // Update headword indices after sorting
+        /** @type {Map<number, number>} */
+        const headwordIndexMap = new Map();
+        for (let i = 0; i < headwordsArray.length; i++) {
+            headwordIndexMap.set(headwordsArray[i].index, i);
+            headwordsArray[i].index = i;
+        }
+
+        // Remap definition headword indices
+        for (const definition of definitions) {
+            for (let i = 0; i < definition.headwordIndices.length; i++) {
+                const oldIndex = definition.headwordIndices[i];
+                const newIndex = headwordIndexMap.get(oldIndex);
+                if (typeof newIndex === 'number') {
+                    definition.headwordIndices[i] = newIndex;
+                }
+            }
+        }
+    }
+
+    /**
+     * @param {import('dictionary').TermHeadword[]} headwordsArray
+     * @param {string} primaryReading
+     * @returns {{sourceTermExactMatchCount: number, matchPrimaryReading: boolean}}
+     */
+    _getHeadwordMatchCounts(headwordsArray, primaryReading) {
+        let sourceTermExactMatchCount = 0;
+        let matchPrimaryReading = false;
+        for (const {sources, reading} of headwordsArray) {
+            if (primaryReading.length > 0 && reading === primaryReading) {
+                matchPrimaryReading = true;
+            }
+            for (const source of sources) {
+                if (source.isPrimary && source.matchSource === 'term') {
+                    ++sourceTermExactMatchCount;
+                    break;
+                }
+            }
+        }
+        return {sourceTermExactMatchCount, matchPrimaryReading};
     }
 
     // Data collection addition functions

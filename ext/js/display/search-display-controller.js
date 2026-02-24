@@ -176,6 +176,10 @@ export class SearchDisplayController {
         if (!isInputField && (!isModifierKey || isCtrlBackspace) && isAllowedKey && !isSpaceKey) {
             this._queryInput.focus({preventScroll: true});
         }
+
+        if (e.ctrlKey && e.key === 'u') {
+            this._onClear(e);
+        }
     }
 
     /** */
@@ -275,7 +279,9 @@ export class SearchDisplayController {
      * @param {KeyboardEvent} e
      */
     _onSearchKeydown(e) {
-        if (e.isComposing) { return; }
+        // Keycode 229 is a special value for events processed by the IME.
+        // https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event#keydown_events_with_ime
+        if (e.isComposing || e.keyCode === 229) { return; }
         const {code, key} = e;
         if (!((code === 'Enter' || key === 'Enter' || code === 'NumpadEnter') && !e.shiftKey)) { return; }
 
@@ -296,7 +302,7 @@ export class SearchDisplayController {
     }
 
     /**
-     * @param {MouseEvent} e
+     * @param {Event} e
      */
     _onClear(e) {
         e.preventDefault();
