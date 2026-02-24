@@ -597,6 +597,12 @@ export class Popup extends EventDispatcher {
         this._frame.addEventListener('mouseover', boundMouseOver);
         this._frame.addEventListener('mouseout', boundMouseOut);
 
+        // Reattach mouse event listeners after frame injection
+        const boundMouseOver = this._onFrameMouseOver.bind(this);
+        const boundMouseOut = this._onFrameMouseOut.bind(this);
+        this._frame.addEventListener('mouseover', boundMouseOver);
+        this._frame.addEventListener('mouseout', boundMouseOut);
+
         // Configure
         /** @type {import('display').DirectApiParams<'displayConfigure'>} */
         const configureParams = {
