@@ -53,7 +53,6 @@ import {StorageController} from './storage-controller.js';
 import {TranslationTextReplacementsController} from './translation-text-replacements-controller.js';
 import {YomitanApiController} from './yomitan-api-controller.js';
 import {chrome} from '../../chrome-mock.js';
-import {arrayBufferToBase64} from '../../data/array-buffer-util.js';
 
 globalThis.senderContext = 4;
 
@@ -120,11 +119,6 @@ window.onNativeMessage = function(message) {
 // Listens to all messages and decides whether to forward them to native
 chrome.runtime.onMessage.addListener(function(message, sender, callback) {
     if (sender.id === globalThis.senderContext) {
-        // TODO: Remove once we do all archive opening in native
-        if (message.params && message.params.archiveContent !== undefined) {
-            message.params.archiveContent = arrayBufferToBase64(message.params.archiveContent);
-        }
-
         postMessageToNative(message, sender);
 
         if (message.params && message.params.messageId !== undefined) {
