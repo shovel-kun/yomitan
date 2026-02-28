@@ -70,7 +70,7 @@ export class Display extends EventDispatcher {
         /** @type {HTMLElement[]} */
         this._dictionaryEntryNodes = [];
         /** @type {import('settings').OptionsContext} */
-        this._optionsContext = {depth: 0, url: window.location.href};
+        this._optionsContext = {current: true, depth: 0, url: window.location.href};
         /** @type {?import('settings').ProfileOptions} */
         this._options = null;
         /** @type {number} */
@@ -1430,7 +1430,6 @@ export class Display extends EventDispatcher {
     async _setContentTermsOrKanji(type, urlSearchParams, token) {
         const lookup = (urlSearchParams.get('lookup') !== 'false');
         const wildcardsEnabled = (urlSearchParams.get('wildcards') !== 'off');
-        const hasEnabledDictionaries = this._options ? this._options.dictionaries.some(({enabled}) => enabled) : false;
 
         // Set query
         safePerformance.mark('display:setQuery:start');
@@ -1470,15 +1469,7 @@ export class Display extends EventDispatcher {
 
         let {dictionaryEntries} = content;
         if (!Array.isArray(dictionaryEntries)) {
-            safePerformance.mark('display:findDictionaryEntries:start');
-            dictionaryEntries = hasEnabledDictionaries && lookup && query.length > 0 ? await this._findDictionaryEntries(type === 'kanji', query, primaryReading, wildcardsEnabled, optionsContext) : [];
-            safePerformance.mark('display:findDictionaryEntries:end');
-            safePerformance.measure('display:findDictionaryEntries', 'display:findDictionaryEntries:start', 'display:findDictionaryEntries:end');
-            if (this._setContentToken !== token) { return; }
-            if (lookup) {
-                content.dictionaryEntries = dictionaryEntries;
-            }
-            changeHistory = true;
+            dictionaryEntries = null;
         }
 
         let contentOriginValid = false;
@@ -1502,6 +1493,20 @@ export class Display extends EventDispatcher {
         if (this._options === null) {
             await this.updateOptions();
             if (this._setContentToken !== token) { return; }
+        }
+
+        const hasEnabledDictionaries = this._options ? this._options.dictionaries.some(({enabled}) => enabled) : false;
+
+        if (dictionaryEntries === null) {
+            safePerformance.mark('display:findDictionaryEntries:start');
+            dictionaryEntries = hasEnabledDictionaries && lookup && query.length > 0 ? await this._findDictionaryEntries(type === 'kanji', query, primaryReading, wildcardsEnabled, optionsContext) : [];
+            safePerformance.mark('display:findDictionaryEntries:end');
+            safePerformance.measure('display:findDictionaryEntries', 'display:findDictionaryEntries:start', 'display:findDictionaryEntries:end');
+            if (this._setContentToken !== token) { return; }
+            if (lookup) {
+                content.dictionaryEntries = dictionaryEntries;
+            }
+            changeHistory = true;
         }
 
         if (changeHistory) {
