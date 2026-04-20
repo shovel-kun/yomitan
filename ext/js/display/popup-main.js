@@ -67,6 +67,41 @@ function postMessageToNative(message, sender) {
 }
 
 const callbackMap = new Map();
+let pendingNativeLookupRequestId = getRequestIdFromLocation();
+
+function getRequestIdFromLocation() {
+    const requestId = new URLSearchParams(window.location.search).get('request_id');
+    if (requestId === null) { return null; }
+    const parsed = Number.parseInt(requestId, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function updatePendingLookupRequestId() {
+    pendingNativeLookupRequestId = getRequestIdFromLocation();
+}
+
+function getResolvedLookupSourceText(display) {
+    const dictionaryEntry = display.dictionaryEntries[display.selectedIndex] ?? display.dictionaryEntries[0] ?? null;
+    if (dictionaryEntry === null) { return null; }
+
+    if (dictionaryEntry.type === 'kanji') {
+        return typeof dictionaryEntry.character === 'string' && dictionaryEntry.character.length > 0 ? dictionaryEntry.character : null;
+    }
+
+    if (dictionaryEntry.type !== 'term' || !Array.isArray(dictionaryEntry.headwords)) {
+        return null;
+    }
+
+    for (const headword of dictionaryEntry.headwords) {
+        if (!Array.isArray(headword.sources)) { continue; }
+        for (const source of headword.sources) {
+            if (!source?.isPrimary) { continue; }
+            return typeof source.originalText === 'string' && source.originalText.length > 0 ? source.originalText : null;
+        }
+    }
+
+    return null;
+}
 
 window.onNativeMessage = function(message) {
     try {
@@ -106,6 +141,8 @@ chrome.runtime.onMessage.addListener(function(message, sender, callback) {
     return true;
 });
 
+window.addEventListener('popstate', updatePendingLookupRequestId);
+
 await Application.main(true, async (application) => {
     const documentFocusController = new DocumentFocusController();
     documentFocusController.prepare();
@@ -128,6 +165,19 @@ await Application.main(true, async (application) => {
     const displayResizer = new DisplayResizer(display);
     displayResizer.prepare();
 
+    display.on('contentUpdateComplete', () => {
+        const requestId = pendingNativeLookupRequestId;
+        if (requestId === null) { return; }
+
+        pendingNativeLookupRequestId = null;
+        chrome.runtime.sendMessage({
+            action: 'nativeResolvedLookup',
+            params: {
+                requestId,
+                sourceText: getResolvedLookupSourceText(display),
+            },
+        });
+    });
     display.initializeState();
 
     document.documentElement.dataset.loaded = 'true';
